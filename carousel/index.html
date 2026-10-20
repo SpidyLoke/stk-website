@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Race Carousel Maker</title>
+<meta name="description" content="Drop in your racing photos and get a seamless Instagram carousel, laid out and sliced in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@1,700;1,800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="flag" aria-hidden="true"></span><h1>Race Carousel Maker</h1></div>
+  <p class="tag">Drop your photos, get a seamless Instagram carousel. Everything runs in your browser; nothing is uploaded.</p>
+</header>
+
+<main class="app">
+  <aside class="panel">
+    <section class="card">
+      <h2>Photos</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" multiple hidden>
+        <strong>Drop photos here</strong>
+        <span>or tap to choose. JPG, PNG, WebP (HEIC works in Safari)</span>
+      </label>
+      <p class="status" id="loadStatus" hidden></p>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="row" id="photoMeta" hidden>
+        <span class="muted" id="photoCount"></span>
+        <button class="link" id="clearAll" type="button">Clear all</button>
+      </div>
+      <p class="hint">★ marks a feature photo: a bigger tile in Mosaic, a background in Layered.</p>
+    </section>
+
+    <section class="card">
+      <h2>Style</h2>
+      <div class="seg" data-path="style">
+        <button type="button" data-v="mosaic">Mosaic</button>
+        <button type="button" data-v="layered">Layered</button>
+      </div>
+
+      <h2>Format</h2>
+      <div class="seg" data-path="format">
+        <button type="button" data-v="4:5">4:5</button>
+        <button type="button" data-v="3:4">3:4</button>
+        <button type="button" data-v="1:1">1:1</button>
+      </div>
+
+      <div class="field">
+        <label for="slides">Slides</label>
+        <output id="slidesOut"></output>
+        <input type="range" id="slides" min="1" max="20" step="1">
+      </div>
+      <label class="check"><input type="checkbox" data-path="autoSlides" data-regen> Auto slide count</label>
+      <label class="check"><input type="checkbox" data-path="seamless" data-regen> Photos cross between slides</label>
+      <label class="check"><input type="checkbox" data-path="keepOrder" data-regen> Keep my photo order</label>
+
+      <div class="field">
+        <label for="radius">Rounded corners</label>
+        <output></output>
+        <input type="range" id="radius" data-path="radius" min="0" max="60" step="2" data-unit="px">
+      </div>
+
+      <button class="btn" id="shuffle" type="button">Shuffle layout</button>
+    </section>
+
+    <section class="card" data-show="mosaic">
+      <h2>Mosaic</h2>
+      <div class="field">
+        <label>Gap between photos</label>
+        <output></output>
+        <input type="range" data-path="mosaic.gap" min="0" max="60" step="2" data-unit="px">
+      </div>
+      <div class="field">
+        <label>Outer border</label>
+        <output></output>
+        <input type="range" data-path="mosaic.margin" min="0" max="120" step="4" data-unit="px">
+      </div>
+      <div class="row">
+        <label for="mbg">Background colour</label>
+        <input type="color" id="mbg" data-path="mosaic.bg">
+      </div>
+    </section>
+
+    <section class="card" data-show="layered">
+      <h2>Layered</h2>
+      <div class="seg" data-path="layered.bgMode">
+        <button type="button" data-v="slide">Background per slide</button>
+        <button type="button" data-v="span">One across all</button>
+      </div>
+      <div class="field">
+        <label>Background blur</label>
+        <output></output>
+        <input type="range" data-path="layered.blur" min="0" max="100" step="1">
+      </div>
+      <div class="field">
+        <label>Background darken</label>
+        <output></output>
+        <input type="range" data-path="layered.darken" min="0" max="80" step="1" data-unit="%">
+      </div>
+      <div class="field">
+        <label>Inset photo size</label>
+        <output></output>
+        <input type="range" data-path="layered.size" min="60" max="140" step="1" data-unit="%">
+      </div>
+      <div class="field">
+        <label>Inset border</label>
+        <output></output>
+        <input type="range" data-path="layered.border" min="0" max="30" step="1" data-unit="px">
+      </div>
+      <div class="row">
+        <label for="lbc">Border colour</label>
+        <input type="color" id="lbc" data-path="layered.borderColor">
+      </div>
+      <label class="check"><input type="checkbox" data-path="layered.shadow"> Drop shadow</label>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <section class="card">
+      <div class="row head">
+        <h2>Editor</h2>
+        <span class="muted small" id="editorHint">Tap two photos to swap them. Drag a photo to reframe it.</span>
+      </div>
+      <div class="strip" id="strip"><canvas id="editor"></canvas></div>
+      <div class="selbar" id="selbar" hidden>
+        <span>Photo selected. Tap another to swap, drag it to reframe.</span>
+        <button class="link" id="resetFrame" type="button">Reset framing</button>
+        <button class="link" id="deselect" type="button">Done</button>
+      </div>
+      <p class="note" id="note" hidden></p>
+    </section>
+
+    <section class="card preview">
+      <div class="phone-wrap">
+        <div class="phone">
+          <div class="ig-head"><span class="ig-av"><span></span></span><span>your.handle</span></div>
+          <div class="slides" id="phoneSlides"></div>
+          <div class="dots" id="dots"></div>
+        </div>
+      </div>
+      <div class="export">
+        <h2>Export</h2>
+        <p class="muted">Each slide is a 1080 px wide JPEG, numbered in posting order.</p>
+        <button class="btn" id="dlZip" type="button" disabled>Download all slides (ZIP)</button>
+        <button class="btn ghost" id="share" type="button" hidden disabled>Share to Instagram / Photos</button>
+        <button class="btn ghost" id="dlOne" type="button" disabled>Save slide shown in preview</button>
+        <p class="status" id="exportStatus" hidden></p>
+      </div>
+    </section>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
