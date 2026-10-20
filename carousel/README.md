@@ -5,9 +5,10 @@ Photos are laid out on one long panorama and sliced into 1080 px slides, so shot
 can run across the swipe from one slide to the next.
 
 - **Mosaic**: tiled grid on a solid background, tiles crossing the slide seams.
-- **Layered**: full-bleed blurred backgrounds with uncropped inset photos on top.
+- **Layered**: the same tidy grid on top of blurred copies of your photos.
 - Formats 4:5, 3:4 and 1:1, up to 20 slides.
-- Tap two photos to swap them, drag to reframe (or move an inset).
+- Tap a photo for its toolbar: resize, crop zoom, remove. Tap two photos to swap.
+- Drag a photo to move its crop, drag the gaps between photos to resize them.
 - Export as a ZIP of numbered JPEGs, a single slide, or the phone share sheet.
 
 Everything runs in the browser; no photo is uploaded anywhere.
