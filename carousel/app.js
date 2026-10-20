@@ -10,6 +10,7 @@ const THUMB_EDGE = 220;
 const PREVIEW_H = 560;    // editor canvas height in pixels
 const MAX_SLIDES = 20;    // Instagram carousel limit
 const FEATURE_WEIGHT = 2.6;
+const MAX_ZOOM = 4;
 
 const state = {
   photos: [],
@@ -22,7 +23,7 @@ const state = {
   radius: 0,
   seed: (Math.random() * 2 ** 32) >>> 0,
   mosaic: { gap: 16, margin: 32, bg: '#0b1230' },
-  layered: { bgMode: 'slide', blur: 20, darken: 15, size: 100, border: 0, borderColor: '#ffffff', shadow: true },
+  layered: { bgMode: 'slide', gap: 24, margin: 64, blur: 35, darken: 20, border: 0, borderColor: '#ffffff', shadow: true },
   layout: null,
   selected: -1,
 };
@@ -64,9 +65,11 @@ function dims() {
   return { SW, SH, N, W: SW * N, H: SH };
 }
 
+// Both styles share one tile layout; they differ in spacing and what sits behind the tiles.
+const spacing = () => (state.style === 'mosaic' ? state.mosaic : state.layered);
+
 function autoSlideCount() {
-  const per = state.style === 'mosaic' ? 3.5 : 3;
-  return clamp(Math.round(state.photos.length / per), 1, MAX_SLIDES);
+  return clamp(Math.round(state.photos.length / 3.5), 1, MAX_SLIDES);
 }
 
 // ---------- image loading ----------
@@ -115,7 +118,7 @@ async function loadPhoto(file) {
     const small = scaleTo(full, full.width, full.height, SMALL_EDGE);
     const thumbUrl = URL.createObjectURL(await toBlob(scaleTo(small, small.width, small.height, THUMB_EDGE), 'image/jpeg', 0.8));
     full.width = full.height = 0; // release canvas memory early (iOS keeps a tight canvas budget)
-    return { id: nextId++, name: file.name, ar: w / h, small, fullBlob, thumbUrl, star: false, fx: 0.5, fy: 0.5, blur: null };
+    return { id: nextId++, name: file.name, ar: w / h, small, fullBlob, thumbUrl, star: false, fx: 0.5, fy: 0.5, zoom: 1, blur: null };
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -144,10 +147,11 @@ async function addFiles(files) {
   regenerate();
 }
 
-// ---------- mosaic layout ----------
+// ---------- layout ----------
 // A guillotine tree: every node splits its rectangle vertically or horizontally.
 // Many random trees are scored and the best kept. Gap and margin are applied when
-// the tree is turned into rectangles, so those sliders don't reshuffle the layout.
+// the tree is turned into rectangles, so those sliders don't reshuffle the layout,
+// and editing a split ratio resizes the two sides of that cut.
 
 function shrink(r, m) {
   return { x: r.x + m, y: r.y + m, w: Math.max(1, r.w - 2 * m), h: Math.max(1, r.h - 2 * m) };
@@ -179,7 +183,9 @@ function buildNode(rect, items, slots, rng) {
   return { dir, ratio, a: buildNode(ra, items.slice(0, k), slots, rng), b: buildNode(rb, items.slice(k), slots, rng) };
 }
 
-function placeNode(node, r, out, gap, d) {
+// Fills `out[leaf]` with each tile's rectangle; `cuts` (optional) collects the
+// draggable gutters as { node, r, pos }.
+function placeNode(node, r, out, gap, d, cuts) {
   if ('leaf' in node) { out[node.leaf] = r; return; }
   if (node.dir === 'v') {
     const usable = r.w - gap;
@@ -193,21 +199,24 @@ function placeNode(node, r, out, gap, d) {
         if (w2 > usable * 0.1 && w2 < usable * 0.9) wa = w2;
       }
     }
-    placeNode(node.a, { x: r.x, y: r.y, w: wa, h: r.h }, out, gap, d);
-    placeNode(node.b, { x: r.x + wa + gap, y: r.y, w: usable - wa, h: r.h }, out, gap, d);
+    cuts?.push({ node, r, pos: r.x + wa + gap / 2 });
+    placeNode(node.a, { x: r.x, y: r.y, w: wa, h: r.h }, out, gap, d, cuts);
+    placeNode(node.b, { x: r.x + wa + gap, y: r.y, w: usable - wa, h: r.h }, out, gap, d, cuts);
   } else {
     const usable = r.h - gap;
     const ha = usable * node.ratio;
-    placeNode(node.a, { x: r.x, y: r.y, w: r.w, h: ha }, out, gap, d);
-    placeNode(node.b, { x: r.x, y: r.y + ha + gap, w: r.w, h: usable - ha }, out, gap, d);
+    cuts?.push({ node, r, pos: r.y + ha + gap / 2 });
+    placeNode(node.a, { x: r.x, y: r.y, w: r.w, h: ha }, out, gap, d, cuts);
+    placeNode(node.b, { x: r.x, y: r.y + ha + gap, w: r.w, h: usable - ha }, out, gap, d, cuts);
   }
 }
 
-function mosaicRects(layout, d) {
-  const out = new Array(layout.slots.length);
-  for (const t of layout.trees) {
-    if (t.node) placeNode(t.node, shrink(t.root, state.mosaic.margin), out, state.mosaic.gap, d);
-  }
+function tileRects(d, cuts) {
+  const L = state.layout;
+  if (!L) return [];
+  const out = new Array(L.slots.length);
+  const { gap, margin } = spacing();
+  for (const t of L.trees) if (t.node) placeNode(t.node, shrink(t.root, margin), out, gap, d, cuts);
   return out;
 }
 
@@ -216,14 +225,13 @@ function chunkSizes(n, parts) {
   return Array.from({ length: parts }, (_, i) => base + (i < extra ? 1 : 0));
 }
 
-function scoreMosaic(layout, d) {
+function scoreLayout(rects, slots, d) {
   const { SW, SH, N } = d;
-  const rects = mosaicRects(layout, d);
   const crossed = new Array(N).fill(false);
   const sizes = [];
   let s = 0;
   rects.forEach((r, i) => {
-    const p = photoById(layout.slots[i].pid);
+    const p = photoById(slots[i].pid);
     const ar = r.w / r.h;
     s += Math.abs(Math.log(ar / p.ar)) * 3 * Math.sqrt((r.w * r.h) / (SW * SH));
     if (r.w < SW * 0.2 || r.h < SH * 0.17) s += 4;
@@ -243,7 +251,7 @@ function scoreMosaic(layout, d) {
   return s + stdev(sizes) * 1.2;
 }
 
-function genMosaic(d) {
+function genLayout(d) {
   const { SW, SH, N, W, H } = d;
   const rng = mulberry32(state.seed);
   const ids = state.photos.map((p) => p.id);
@@ -251,134 +259,79 @@ function genMosaic(d) {
     ? [{ x: 0, y: 0, w: W, h: H }]
     : Array.from({ length: N }, (_, i) => ({ x: i * SW, y: 0, w: SW, h: SH }));
   const counts = chunkSizes(ids.length, roots.length);
+  const { margin } = spacing();
   let best = null;
   for (let c = 0; c < 400; c++) {
     const order = state.keepOrder ? ids : shuffled(ids, rng);
-    const slots = order.map((pid) => ({ kind: 'tile', pid }));
+    const slots = order.map((pid) => ({ pid }));
     let idx = 0;
     const trees = roots.map((root, ri) => {
       const items = Array.from({ length: counts[ri] }, () => idx++);
-      return { root, node: items.length ? buildNode(shrink(root, state.mosaic.margin), items, slots, rng) : null };
+      return { root, node: items.length ? buildNode(shrink(root, margin), items, slots, rng) : null };
     });
-    const layout = { type: 'mosaic', slots, trees };
-    const score = scoreMosaic(layout, d);
-    if (!best || score < best.score) best = { score, layout };
+    state.layout = { slots, trees }; // tileRects reads the candidate from state
+    const score = scoreLayout(tileRects(d), slots, d);
+    if (!best || score < best.score) best = { score, layout: state.layout };
   }
   return best.layout;
 }
 
-// ---------- layered layout ----------
-// Full-bleed backgrounds (one per slide, or one across the whole carousel) with
-// uncropped inset photos on top, some straddling the seams between slides.
-
-function insetRect(slot, d) {
-  const p = photoById(slot.pid);
-  const { SW, SH, W, H } = d;
-  const scale = (state.layered.size / 100) * slot.k;
-  let w, h;
-  if (p.ar >= 1) { w = 0.62 * SW * scale; h = w / p.ar; } else { h = 0.52 * SH * scale; w = h * p.ar; }
-  const fit = Math.min(1, (0.94 * SW) / w, (0.86 * SH) / h);
-  w *= fit; h *= fit;
-  const m = 0.035 * SW + state.layered.border;
-  let minX = m, maxX = W - m - w;
-  if (!state.seamless) {
-    const si = clamp(Math.floor(slot.cx / SW), 0, d.N - 1);
-    minX = si * SW + m; maxX = (si + 1) * SW - m - w;
-  }
-  const x = maxX < minX ? (minX + maxX) / 2 : clamp(slot.cx - w / 2, minX, maxX);
-  const y = clamp(slot.cy - h / 2, m, Math.max(m, H - m - h));
-  return { x, y, w, h };
+// Path from a tree root down to the leaf for slot i: [{ node, side }], or null.
+function pathTo(node, i, path = []) {
+  if (!node) return null;
+  if ('leaf' in node) return node.leaf === i ? path : null;
+  return pathTo(node.a, i, [...path, { node, side: 'a' }]) || pathTo(node.b, i, [...path, { node, side: 'b' }]);
 }
 
-function scoreLayered(layout, d) {
-  const { SW, SH, N } = d;
-  const insets = layout.slots.filter((s) => s.kind === 'inset').map((s) => insetRect(s, d));
-  const b = state.layered.border;
-  let s = 0;
-  const crossed = new Array(N).fill(false);
-  const perSlide = new Array(N).fill(0);
-  insets.forEach((r, i) => {
-    for (let j = i + 1; j < insets.length; j++) {
-      const o = insets[j];
-      const ox = Math.min(r.x + r.w, o.x + o.w) - Math.max(r.x, o.x) + 2 * b;
-      const oy = Math.min(r.y + r.h, o.y + o.h) - Math.max(r.y, o.y) + 2 * b;
-      if (ox > 0 && oy > 0) {
-        const frac = (ox * oy) / Math.min(r.w * r.h, o.w * o.h);
-        s += frac > 0.03 ? 14 * frac + 1.5 : 0;
-      }
-    }
-    for (let k = 1; k < N; k++) {
-      const x = k * SW;
-      if (x > r.x && x < r.x + r.w) {
-        const m = Math.min(x - r.x, r.x + r.w - x);
-        if (m < Math.max(0.25 * r.w, 0.12 * SW)) s += 4;
-        else crossed[k] = true;
-      }
-    }
-    perSlide[clamp(Math.floor((r.x + r.w / 2) / SW), 0, N - 1)]++;
-    s += Math.abs((r.y + r.h / 2) / SH - 0.5) < 0.08 ? 0.5 : 0; // dead-centre insets hide the background
-  });
-  if (state.seamless && insets.length) for (let k = 1; k < N; k++) if (!crossed[k]) s += 1.5;
-  if (insets.length >= N) s += perSlide.filter((c) => c === 0).length * 1.5;
-  return s;
+function findPath(i) {
+  for (const t of state.layout.trees) {
+    const p = pathTo(t.node, i);
+    if (p) return { tree: t, path: p };
+  }
+  return null;
 }
 
-function genLayered(d) {
-  const { SW, SH, N, W, H } = d;
-  const rng = mulberry32(state.seed);
-  const ids = state.photos.map((p) => p.id);
-  const span = state.layered.bgMode === 'span';
-  const nb = span ? 1 : N;
-  let best = null;
-  for (let c = 0; c < 600; c++) {
-    const order = state.keepOrder ? ids : shuffled(ids, rng);
-    const pool = order.filter((id) => photoById(id).star).concat(order.filter((id) => !photoById(id).star));
-    const bgIds = Array.from({ length: nb }, (_, i) => pool[i % pool.length]);
-    const used = new Set(bgIds);
-    const insetIds = order.filter((id) => !used.has(id));
-    const slots = bgIds.map((pid, i) => ({
-      kind: 'bg', pid, rect: span ? { x: 0, y: 0, w: W, h: H } : { x: i * SW, y: 0, w: SW, h: SH },
-    }));
-    const k = insetIds.length;
-    const density = clamp(1.25 - 0.22 * (k / N), 0.7, 1.05); // more insets per slide, smaller insets
-    const flip = rng() < 0.5;
-    const perSlide = chunkSizes(k, N);
-    insetIds.forEach((pid, j) => {
-      let cx;
-      if (state.seamless) {
-        const step = W / k;
-        cx = (j + 0.5) * step + (rng() - 0.5) * step * 0.9;
-      } else {
-        let si = 0, q = j;
-        while (q >= perSlide[si]) q -= perSlide[si++];
-        const step = SW / perSlide[si];
-        cx = si * SW + (q + 0.5) * step + (rng() - 0.5) * step * 0.3;
+// Grows (f > 1) or shrinks a tile by changing the nearest vertical and horizontal cut around it.
+function resizeSlot(i, f) {
+  const found = findPath(i);
+  if (!found) return;
+  const done = new Set();
+  for (let j = found.path.length - 1; j >= 0; j--) {
+    const { node, side } = found.path[j];
+    if (done.has(node.dir)) continue;
+    done.add(node.dir);
+    const share = clamp((side === 'a' ? node.ratio : 1 - node.ratio) * f, 0.06, 0.94);
+    node.ratio = side === 'a' ? share : 1 - share;
+  }
+}
+
+// Removes a tile in place: its sibling takes over the space, the rest of the layout stays put.
+function removeSlot(i) {
+  const L = state.layout;
+  const found = findPath(i);
+  if (found) {
+    const { tree, path } = found;
+    if (!path.length) tree.node = null;
+    else {
+      const { node, side } = path[path.length - 1];
+      const sibling = side === 'a' ? node.b : node.a;
+      if (path.length === 1) tree.node = sibling;
+      else {
+        const parent = path[path.length - 2];
+        parent.node[parent.side] = sibling;
       }
-      const top = (j % 2 === 0) !== flip;
-      const cy = (top ? 0.3 : 0.7) * H + (rng() - 0.5) * 0.16 * H;
-      slots.push({ kind: 'inset', pid, cx, cy, k: density * (0.82 + rng() * 0.3) });
-    });
-    const layout = { type: 'layered', slots };
-    const score = scoreLayered(layout, d);
-    if (!best || score < best.score) best = { score, layout };
+    }
   }
-  // Store the clamped positions so dragging starts from where the inset is drawn.
-  for (const s of best.layout.slots) {
-    if (s.kind !== 'inset') continue;
-    const r = insetRect(s, d);
-    s.cx = r.x + r.w / 2; s.cy = r.y + r.h / 2;
-  }
-  return best.layout;
+  L.slots.splice(i, 1);
+  const renumber = (n) => {
+    if (!n) return;
+    if ('leaf' in n) { if (n.leaf > i) n.leaf--; return; }
+    renumber(n.a); renumber(n.b);
+  };
+  L.trees.forEach((t) => renumber(t.node));
 }
 
 // ---------- drawing ----------
-
-function slotRects(d) {
-  const L = state.layout;
-  if (!L) return [];
-  if (L.type === 'mosaic') return mosaicRects(L, d);
-  return L.slots.map((s) => (s.kind === 'bg' ? s.rect : insetRect(s, d)));
-}
 
 function roundRectPath(ctx, x, y, w, h, r) {
   r = Math.min(r, w / 2, h / 2);
@@ -392,13 +345,14 @@ function roundRectPath(ctx, x, y, w, h, r) {
 }
 
 // Crop fractions: how much of the source width/height a cover-fit into `r` uses.
-function coverFrac(p, r) {
+function coverFrac(p, r, zoom = p.zoom) {
   const ar = r.w / r.h;
-  return p.ar > ar ? { cw: ar / p.ar, ch: 1 } : { cw: 1, ch: p.ar / ar };
+  const f = p.ar > ar ? { cw: ar / p.ar, ch: 1 } : { cw: 1, ch: p.ar / ar };
+  return { cw: f.cw / zoom, ch: f.ch / zoom };
 }
 
-function drawCover(ctx, src, p, r, radius) {
-  const { cw, ch } = coverFrac(p, r);
+function drawCover(ctx, src, p, r, radius, zoom = p.zoom) {
+  const { cw, ch } = coverFrac(p, r, zoom);
   const sw = src.width * cw, sh = src.height * ch;
   const sx = (src.width - sw) * p.fx, sy = (src.height - sh) * p.fy;
   if (radius > 0) {
@@ -451,6 +405,27 @@ function blurredSource(p) {
 
 const intersects = (r, x0, x1) => r.x < x1 && r.x + r.w > x0;
 
+// Layered backgrounds follow the tiles: each slide (or the whole carousel) is backed by a
+// blurred copy of the photo that takes up most of it, featured photos first.
+function backgrounds(rects, d) {
+  const slots = state.layout.slots;
+  const pick = (x0, x1) => {
+    let best = null, bestV = 0;
+    slots.forEach((s, i) => {
+      const r = rects[i];
+      const ov = Math.min(r.x + r.w, x1) - Math.max(r.x, x0);
+      const v = ov > 0 ? ov * r.h * (photoById(s.pid).star ? 3 : 1) : 0;
+      if (v > bestV) { bestV = v; best = s.pid; }
+    });
+    return best;
+  };
+  if (state.layered.bgMode === 'span') return [{ rect: { x: 0, y: 0, w: d.W, h: d.H }, pid: pick(0, d.W) }];
+  return Array.from({ length: d.N }, (_, i) => {
+    const x0 = i * d.SW;
+    return { rect: { x: x0, y: 0, w: d.SW, h: d.SH }, pid: pick(x0, x0 + d.SW) };
+  });
+}
+
 // Draws the panorama region [viewX, viewX + viewW] into ctx at `scale`.
 // `hi` maps photo id to a full-resolution bitmap (export); otherwise previews are used.
 function drawScene(ctx, scale, viewX, viewW, hi) {
@@ -461,45 +436,42 @@ function drawScene(ctx, scale, viewX, viewW, hi) {
   ctx.setTransform(scale, 0, 0, scale, -viewX * scale, 0);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  const rects = slotRects(d);
+  const rects = tileRects(d);
+  const layered = state.style === 'layered';
+  const { blur, darken, border, borderColor, shadow } = state.layered;
 
-  if (L.type === 'mosaic') {
+  if (!layered) {
     ctx.fillStyle = state.mosaic.bg;
     ctx.fillRect(viewX, 0, viewW, d.H);
-    L.slots.forEach((s, i) => {
-      if (intersects(rects[i], viewX, x1)) drawCover(ctx, src(photoById(s.pid)), photoById(s.pid), rects[i], state.radius);
-    });
-    return;
+  } else {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(viewX, 0, viewW, d.H);
+    for (const bg of backgrounds(rects, d)) {
+      if (!bg.pid || !intersects(bg.rect, viewX, x1)) continue;
+      const p = photoById(bg.pid);
+      drawCover(ctx, blur > 0 ? blurredSource(p) : src(p), p, bg.rect, 0, 1);
+      if (darken > 0) {
+        ctx.fillStyle = `rgba(0,0,0,${darken / 100})`;
+        ctx.fillRect(bg.rect.x, bg.rect.y, bg.rect.w, bg.rect.h);
+      }
+    }
   }
 
-  const { blur, darken, border, borderColor, shadow } = state.layered;
-  ctx.fillStyle = '#000';
-  ctx.fillRect(viewX, 0, viewW, d.H);
-  L.slots.forEach((s, i) => {
-    if (s.kind !== 'bg' || !intersects(rects[i], viewX, x1)) return;
-    const p = photoById(s.pid);
-    drawCover(ctx, blur > 0 ? blurredSource(p) : src(p), p, rects[i], 0);
-    if (darken > 0) {
-      ctx.fillStyle = `rgba(0,0,0,${darken / 100})`;
-      ctx.fillRect(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
-    }
-  });
+  const rad = state.radius;
   L.slots.forEach((s, i) => {
     const r = rects[i];
-    if (s.kind !== 'inset' || !intersects({ x: r.x - 80, w: r.w + 160 }, viewX, x1)) return;
+    if (!intersects({ x: r.x - 80, w: r.w + 160 }, viewX, x1)) return;
     const p = photoById(s.pid);
-    const outer = { x: r.x - border, y: r.y - border, w: r.w + border * 2, h: r.h + border * 2 };
-    const rad = state.radius;
-    if (shadow || border > 0) {
+    if (layered && (shadow || border > 0)) {
       ctx.save();
       if (shadow) {
         // Shadow sizes ignore the transform, so scale them by hand.
         ctx.shadowColor = 'rgba(0,0,0,0.55)';
-        ctx.shadowBlur = 48 * scale;
-        ctx.shadowOffsetY = 14 * scale;
+        ctx.shadowBlur = 44 * scale;
+        ctx.shadowOffsetY = 12 * scale;
       }
       ctx.fillStyle = border > 0 ? borderColor : '#000';
-      roundRectPath(ctx, outer.x, outer.y, outer.w, outer.h, rad > 0 ? rad + border : 0);
+      roundRectPath(ctx, r.x - border, r.y - border, r.w + border * 2, r.h + border * 2, rad > 0 ? rad + border : 0);
       ctx.fill();
       ctx.restore();
     }
@@ -544,6 +516,7 @@ function doRender() {
   });
 
   drawOverlays(d, ps);
+  positionTools(d);
 }
 
 function drawOverlays(d, ps) {
@@ -577,12 +550,31 @@ function drawOverlays(d, ps) {
     ectx.fillText('ADD PHOTOS TO BUILD YOUR CAROUSEL', Math.min(editor.width, 900) / 2, PREVIEW_H / 2);
     return;
   }
+  if (hoverCut) {
+    const { node, r, pos } = hoverCut;
+    ectx.fillStyle = '#ffc400';
+    if (node.dir === 'v') ectx.fillRect(pos * ps - 2, r.y * ps, 4, r.h * ps);
+    else ectx.fillRect(r.x * ps, pos * ps - 2, r.w * ps, 4);
+  }
   if (state.selected >= 0) {
-    const r = slotRects(d)[state.selected];
+    const r = tileRects(d)[state.selected];
     ectx.lineWidth = 4;
     ectx.strokeStyle = '#ffc400';
     ectx.strokeRect(r.x * ps + 2, r.y * ps + 2, r.w * ps - 4, r.h * ps - 4);
   }
+}
+
+// Floating toolbar pinned to the top of the selected tile.
+function positionTools(d) {
+  const tools = $('#tools');
+  if (state.selected < 0 || !state.layout) { tools.hidden = true; return; }
+  tools.hidden = false;
+  const r = tileRects(d)[state.selected];
+  const k = editor.clientHeight / d.H;
+  const half = tools.offsetWidth / 2;
+  const cx = clamp((r.x + r.w / 2) * k, half + 4, editor.clientWidth - half - 4);
+  tools.style.left = `${cx}px`;
+  tools.style.top = `${Math.max(6, r.y * k + 8)}px`;
 }
 
 function rebuildPhone(d) {
@@ -612,13 +604,31 @@ function regenerate() {
   state.selected = -1;
   if (state.autoSlides && state.photos.length) state.slides = autoSlideCount();
   const d = dims();
-  state.layout = state.photos.length ? (state.style === 'mosaic' ? genMosaic(d) : genLayered(d)) : null;
+  state.layout = state.photos.length ? genLayout(d) : null;
   rebuildPhone(d);
   syncUI();
   render();
 }
 
+function removePhoto(id) {
+  const p = photoById(id);
+  if (!p) return;
+  URL.revokeObjectURL(p.thumbUrl);
+  state.photos = state.photos.filter((q) => q !== p);
+  state.selected = -1;
+  if (!state.photos.length) state.layout = null;
+  else {
+    const i = state.layout.slots.findIndex((s) => s.pid === id);
+    if (i >= 0) removeSlot(i);
+  }
+  renderThumbs();
+  syncUI();
+  render();
+}
+
 // ---------- editor interaction ----------
+// Mouse: drag a photo to move its crop, drag a gutter to resize, scroll to zoom the selected photo.
+// Touch: tap to select first (so swipes still scroll the strip), then drag, pinch or use the toolbar.
 
 function toScene(e) {
   const r = editor.getBoundingClientRect();
@@ -627,7 +637,7 @@ function toScene(e) {
 }
 
 function hitTest(pt) {
-  const rects = slotRects(dims());
+  const rects = tileRects(dims());
   for (let i = rects.length - 1; i >= 0; i--) {
     const r = rects[i];
     if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) return i;
@@ -635,53 +645,103 @@ function hitTest(pt) {
   return -1;
 }
 
+function cutAt(pt) {
+  const cuts = [];
+  tileRects(dims(), cuts);
+  const tol = Math.max(spacing().gap / 2, 0) + 7 * pt.k;
+  for (const c of cuts) {
+    const { r, pos, node } = c;
+    if (node.dir === 'v' && Math.abs(pt.x - pos) <= tol && pt.y >= r.y && pt.y <= r.y + r.h) return c;
+    if (node.dir === 'h' && Math.abs(pt.y - pos) <= tol && pt.x >= r.x && pt.x <= r.x + r.w) return c;
+  }
+  return null;
+}
+
+function setZoom(p, z) {
+  p.zoom = clamp(z, 1, MAX_ZOOM);
+  render();
+}
+
 let drag = null;
+let hoverCut = null;
+const pointers = new Map();
+let pinch = null;
 
 editor.addEventListener('pointerdown', (e) => {
   if (!state.layout) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const locked = state.selected >= 0;
+
+  if (pointers.size === 2 && locked) { // pinch to zoom the selected photo
+    const [a, b] = [...pointers.values()];
+    pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom: photoById(state.layout.slots[state.selected].pid).zoom };
+    drag = null;
+    return;
+  }
+  if (pointers.size > 1) return;
+
   const pt = toScene(e);
+  const canDrag = e.pointerType === 'mouse' || locked;
+  const cut = canDrag ? cutAt(pt) : null;
+  if (cut) {
+    editor.setPointerCapture(e.pointerId);
+    drag = { cut, moved: true };
+    return;
+  }
   const hit = hitTest(pt);
-  if (hit < 0) { drag = { hit, tapOnly: true }; return; }
-  // On touch, only a selected photo can be dragged, so swiping still scrolls the strip.
-  if (e.pointerType !== 'mouse' && hit !== state.selected) { drag = { hit, tapOnly: true }; return; }
+  if (hit < 0 || (e.pointerType !== 'mouse' && hit !== state.selected)) { drag = { hit, tapOnly: true }; return; }
   editor.setPointerCapture(e.pointerId);
-  const slot = state.layout.slots[hit];
-  const p = photoById(slot.pid);
-  drag = { hit, sx: e.clientX, sy: e.clientY, k: pt.k, moved: false, fx: p.fx, fy: p.fy, cx: slot.cx, cy: slot.cy };
+  const p = photoById(state.layout.slots[hit].pid);
+  drag = { hit, sx: e.clientX, sy: e.clientY, k: pt.k, moved: false, fx: p.fx, fy: p.fy };
 });
 
 editor.addEventListener('pointermove', (e) => {
-  if (!drag || drag.tapOnly) return;
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    setZoom(photoById(state.layout.slots[state.selected].pid), pinch.zoom * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.dist));
+    return;
+  }
+  if (!drag) {
+    if (e.pointerType === 'mouse' && state.layout) {
+      const c = cutAt(toScene(e));
+      if (c !== hoverCut && (c?.node !== hoverCut?.node)) { hoverCut = c; render(); }
+      editor.style.cursor = c ? (c.node.dir === 'v' ? 'col-resize' : 'row-resize') : '';
+    }
+    return;
+  }
+  if (drag.tapOnly) return;
+  if (drag.cut) {
+    const pt = toScene(e);
+    const { node, r } = drag.cut;
+    const gap = spacing().gap;
+    node.ratio = node.dir === 'v'
+      ? clamp((pt.x - r.x - gap / 2) / (r.w - gap), 0.06, 0.94)
+      : clamp((pt.y - r.y - gap / 2) / (r.h - gap), 0.06, 0.94);
+    hoverCut = drag.cut;
+    render();
+    return;
+  }
   const dxc = e.clientX - drag.sx, dyc = e.clientY - drag.sy;
   if (!drag.moved && Math.hypot(dxc, dyc) < 5) return;
   drag.moved = true;
   const dx = dxc * drag.k, dy = dyc * drag.k;
-  const slot = state.layout.slots[drag.hit];
-  const p = photoById(slot.pid);
-  if (slot.kind === 'inset') {
-    slot.cx = drag.cx + dx;
-    slot.cy = drag.cy + dy;
-  } else {
-    const r = slotRects(dims())[drag.hit];
-    const { cw, ch } = coverFrac(p, r);
-    if (cw < 0.999) p.fx = clamp(drag.fx - ((dx / r.w) * cw) / (1 - cw), 0, 1);
-    if (ch < 0.999) p.fy = clamp(drag.fy - ((dy / r.h) * ch) / (1 - ch), 0, 1);
-  }
+  const p = photoById(state.layout.slots[drag.hit].pid);
+  const r = tileRects(dims())[drag.hit];
+  const { cw, ch } = coverFrac(p, r);
+  if (cw < 0.999) p.fx = clamp(drag.fx - ((dx / r.w) * cw) / (1 - cw), 0, 1);
+  if (ch < 0.999) p.fy = clamp(drag.fy - ((dy / r.h) * ch) / (1 - ch), 0, 1);
   render();
 });
 
-editor.addEventListener('pointerup', () => {
+function endPointer(e, cancelled) {
+  pointers.delete(e.pointerId);
+  if (pinch) { if (pointers.size < 2) pinch = null; return; }
   if (!drag) return;
-  const { hit, moved } = drag;
+  const { hit, moved, cut } = drag;
   drag = null;
-  if (moved) {
-    const slot = state.layout.slots[hit];
-    if (slot.kind === 'inset') { // keep the stored centre in sync with the clamped position
-      const r = insetRect(slot, dims());
-      slot.cx = r.x + r.w / 2; slot.cy = r.y + r.h / 2;
-    }
-    return;
-  }
+  if (cut) { hoverCut = null; render(); return; }
+  if (moved || cancelled) return;
   if (hit < 0) state.selected = -1;
   else if (state.selected < 0) state.selected = hit;
   else if (state.selected === hit) state.selected = -1;
@@ -692,22 +752,60 @@ editor.addEventListener('pointerup', () => {
   }
   syncSelection();
   render();
-});
+}
 
-editor.addEventListener('pointercancel', () => { drag = null; });
+editor.addEventListener('pointerup', (e) => endPointer(e, false));
+editor.addEventListener('pointercancel', (e) => endPointer(e, true));
+editor.addEventListener('pointerleave', () => { if (hoverCut && !drag) { hoverCut = null; render(); } });
+
+editor.addEventListener('wheel', (e) => {
+  if (state.selected < 0 || hitTest(toScene(e)) !== state.selected) return;
+  e.preventDefault();
+  const p = photoById(state.layout.slots[state.selected].pid);
+  setZoom(p, p.zoom * Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
 
 function syncSelection() {
   $('#selbar').hidden = state.selected < 0;
   editor.classList.toggle('locked', state.selected >= 0);
+  if (state.selected < 0) $('#tools').hidden = true;
 }
+
+$('#tools').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || state.selected < 0) return;
+  const i = state.selected;
+  const p = photoById(state.layout.slots[i].pid);
+  switch (b.dataset.act) {
+    case 'bigger': resizeSlot(i, 1.15); break;
+    case 'smaller': resizeSlot(i, 1 / 1.15); break;
+    case 'zoomIn': setZoom(p, p.zoom * 1.2); break;
+    case 'zoomOut': setZoom(p, p.zoom / 1.2); break;
+    case 'remove': removePhoto(p.id); return;
+  }
+  render();
+});
 
 $('#resetFrame').addEventListener('click', () => {
   if (state.selected < 0) return;
   const p = photoById(state.layout.slots[state.selected].pid);
   p.fx = p.fy = 0.5;
+  p.zoom = 1;
   render();
 });
 $('#deselect').addEventListener('click', () => { state.selected = -1; syncSelection(); render(); });
+
+document.addEventListener('keydown', (e) => {
+  if (state.selected < 0 || e.target.closest('input, textarea, select')) return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    removePhoto(state.layout.slots[state.selected].pid);
+  } else if (e.key === 'Escape') {
+    state.selected = -1; syncSelection(); render();
+  }
+});
+
+window.addEventListener('resize', render);
 
 // ---------- sidebar ----------
 
@@ -721,12 +819,7 @@ function renderThumbs() {
     el.querySelector('img').src = p.thumbUrl;
     el.querySelector('img').alt = p.name;
     el.querySelector('.star').addEventListener('click', () => { p.star = !p.star; renderThumbs(); regenerate(); });
-    el.querySelector('.del').addEventListener('click', () => {
-      URL.revokeObjectURL(p.thumbUrl);
-      state.photos = state.photos.filter((q) => q !== p);
-      renderThumbs();
-      regenerate();
-    });
+    el.querySelector('.del').addEventListener('click', () => removePhoto(p.id));
     box.appendChild(el);
   }
   const n = state.photos.length;
@@ -741,7 +834,7 @@ function setPath(path, v) {
   keys.reduce((o, k) => o[k], state)[last] = v;
 }
 
-const REGEN_PATHS = new Set(['style', 'format', 'layered.bgMode']);
+const REGEN_PATHS = new Set(['format']);
 
 function syncUI() {
   $$('.seg[data-path]').forEach((seg) => {
@@ -758,16 +851,10 @@ function syncUI() {
   $('#slides').value = state.slides;
   $('#slidesOut').textContent = state.autoSlides ? `${state.slides} (auto)` : state.slides;
   $$('[data-show]').forEach((el) => { el.hidden = el.dataset.show !== state.style; });
-  $('#editorHint').textContent = state.style === 'mosaic'
-    ? 'Tap two photos to swap them. Drag a photo to reframe it.'
-    : 'Tap two photos to swap them. Drag an inset to move it, or a background to reframe it.';
   syncSelection();
 
   const n = state.photos.length;
-  let note = '';
-  if (n && state.style === 'mosaic' && n < state.slides) note = 'Fewer photos than slides, so tiles get stretched. Add photos or drop the slide count.';
-  if (n && state.style === 'layered' && state.layered.bgMode === 'slide' && n < state.slides) note = 'Fewer photos than slides, so backgrounds repeat.';
-  if (n && state.style === 'layered' && state.layered.bgMode === 'slide' && n === state.slides) note = 'Every photo is a background. Add photos or drop the slide count to get insets.';
+  const note = n && n < state.slides ? 'Fewer photos than slides, so tiles get stretched. Add photos or drop the slide count.' : '';
   $('#note').hidden = !note;
   $('#note').textContent = note;
 
@@ -779,7 +866,9 @@ $$('.seg[data-path]').forEach((seg) => {
     const b = e.target.closest('button');
     if (!b) return;
     setPath(seg.dataset.path, b.dataset.v);
-    regenerate();
+    if (REGEN_PATHS.has(seg.dataset.path)) { regenerate(); return; }
+    syncUI();
+    render();
   });
 });
 
@@ -843,13 +932,14 @@ async function decodeFull(p) {
 }
 
 function photosInSlide(i, d) {
-  const rects = slotRects(d);
+  const rects = tileRects(d);
+  const x0 = i * d.SW, x1 = x0 + d.SW;
   const ids = new Set();
-  const blurredBg = state.layout.type === 'layered' && state.layered.blur > 0;
-  state.layout.slots.forEach((s, j) => {
-    if (blurredBg && s.kind === 'bg') return; // blurred backgrounds come from the preview copy
-    if (intersects(rects[j], i * d.SW, (i + 1) * d.SW)) ids.add(s.pid);
-  });
+  state.layout.slots.forEach((s, j) => { if (intersects(rects[j], x0, x1)) ids.add(s.pid); });
+  // Blurred backgrounds come from the preview copy; sharp ones need the full image.
+  if (state.style === 'layered' && state.layered.blur === 0) {
+    for (const bg of backgrounds(rects, d)) if (bg.pid && intersects(bg.rect, x0, x1)) ids.add(bg.pid);
+  }
   return ids;
 }
 

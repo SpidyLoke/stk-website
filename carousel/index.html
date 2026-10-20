@@ -31,7 +31,7 @@
         <span class="muted" id="photoCount"></span>
         <button class="link" id="clearAll" type="button">Clear all</button>
       </div>
-      <p class="hint">★ marks a feature photo: a bigger tile in Mosaic, a background in Layered.</p>
+      <p class="hint">★ marks a feature photo: it gets a bigger tile, and in Layered it is picked first for the blurred background.</p>
     </section>
 
     <section class="card">
@@ -86,9 +86,20 @@
 
     <section class="card" data-show="layered">
       <h2>Layered</h2>
+      <p class="hint layered-hint">Same tidy grid, sitting on a blurred copy of your photos.</p>
       <div class="seg" data-path="layered.bgMode">
         <button type="button" data-v="slide">Background per slide</button>
         <button type="button" data-v="span">One across all</button>
+      </div>
+      <div class="field">
+        <label>Gap between photos</label>
+        <output></output>
+        <input type="range" data-path="layered.gap" min="0" max="80" step="2" data-unit="px">
+      </div>
+      <div class="field">
+        <label>Background showing at edges</label>
+        <output></output>
+        <input type="range" data-path="layered.margin" min="0" max="200" step="4" data-unit="px">
       </div>
       <div class="field">
         <label>Background blur</label>
@@ -101,12 +112,7 @@
         <input type="range" data-path="layered.darken" min="0" max="80" step="1" data-unit="%">
       </div>
       <div class="field">
-        <label>Inset photo size</label>
-        <output></output>
-        <input type="range" data-path="layered.size" min="60" max="140" step="1" data-unit="%">
-      </div>
-      <div class="field">
-        <label>Inset border</label>
+        <label>Photo border</label>
         <output></output>
         <input type="range" data-path="layered.border" min="0" max="30" step="1" data-unit="px">
       </div>
@@ -122,12 +128,21 @@
     <section class="card">
       <div class="row head">
         <h2>Editor</h2>
-        <span class="muted small" id="editorHint">Tap two photos to swap them. Drag a photo to reframe it.</span>
+        <span class="muted small">Tap a photo to edit it, tap two to swap. Drag the gaps between photos to resize.</span>
       </div>
-      <div class="strip" id="strip"><canvas id="editor"></canvas></div>
+      <div class="strip" id="strip">
+        <div class="strip-inner">
+          <canvas id="editor"></canvas>
+          <div class="tools" id="tools" hidden>
+            <span class="tgroup"><button type="button" data-act="smaller" title="Smaller">−</button><span>Size</span><button type="button" data-act="bigger" title="Bigger">+</button></span>
+            <span class="tgroup"><button type="button" data-act="zoomOut" title="Zoom out">−</button><span>Crop</span><button type="button" data-act="zoomIn" title="Zoom in">+</button></span>
+            <button type="button" class="tdel" data-act="remove" title="Remove photo (Delete key)">Remove</button>
+          </div>
+        </div>
+      </div>
       <div class="selbar" id="selbar" hidden>
-        <span>Photo selected. Tap another to swap, drag it to reframe.</span>
-        <button class="link" id="resetFrame" type="button">Reset framing</button>
+        <span>Photo selected. Drag it to move the crop, pinch or scroll to zoom, or tap another photo to swap.</span>
+        <button class="link" id="resetFrame" type="button">Reset crop</button>
         <button class="link" id="deselect" type="button">Done</button>
       </div>
       <p class="note" id="note" hidden></p>

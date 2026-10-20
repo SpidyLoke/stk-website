@@ -231,6 +231,41 @@ input[type=color] {
   background: #05070a;
   scrollbar-width: thin;
 }
+.strip-inner { position: relative; width: max-content; }
+
+.tools {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px;
+  border-radius: 12px;
+  background: rgba(10, 12, 16, .88);
+  border: 1px solid rgba(255, 196, 0, .45);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 12px;
+}
+.tgroup { display: flex; align-items: center; gap: 4px; padding: 0 2px; }
+.tgroup span { color: var(--muted); min-width: 30px; text-align: center; }
+.tools button {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: #222a3a;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tools button:hover { background: #2f3a52; }
+.tools .tdel { background: var(--accent); font-size: 12px; }
+.tools .tdel:hover { background: #ff2a20; }
+
 #editor {
   display: block;
   width: auto;
@@ -310,3 +345,5 @@ input[type=color] {
   .panel { position: static; max-height: none; overflow: visible; }
   .preview { grid-template-columns: minmax(0, 1fr); }
 }
+
+.layered-hint { margin: 0 0 10px; }
