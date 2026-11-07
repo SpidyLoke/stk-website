@@ -1,5 +1,5 @@
 # KartCut one-time setup for Windows 10/11 (run via setup_windows.bat)
-# Installs: Python 3.12 (if missing), a private Python environment, PyTorch with CUDA
+# Installs: a private Python 3.12, its own environment, PyTorch with CUDA
 # for your NVIDIA card, the AI libraries, FFmpeg with NVENC, and downloads the models.
 
 $ErrorActionPreference = "Continue"  # native tools write to stderr; we check exit codes instead
@@ -13,55 +13,89 @@ function Step($t) { Write-Host ""; Write-Host "==> $t" -ForegroundColor Yellow }
 function Fail($t) { Write-Host ""; Write-Host "SETUP FAILED: $t" -ForegroundColor Red; exit 1 }
 function Have($cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
-function Find-Python {
-  # Any 64-bit Python 3.10 to 3.13 works; 3.12 preferred.
+# A Python is only usable if its standard library is complete. (Damaged installs that
+# are missing modules like difflib exist in the wild and break numpy/scipy at start-up.)
+$HealthCode = "import sys, struct, difflib, unittest, venv, ensurepip, ssl, sqlite3, ctypes, json, zipfile; sys.exit(0 if struct.calcsize('P') == 8 and (3, 10) <= sys.version_info[:2] <= (3, 13) else 3)"
+function Test-Python($exe) {
+  if (-not $exe -or -not (Test-Path $exe)) { return $false }
+  & $exe -c $HealthCode 2>$null | Out-Null
+  return ($LASTEXITCODE -eq 0)
+}
+
+function Find-SystemPython {
+  # Fallback only: first healthy 64-bit Python 3.10 to 3.13 on the machine.
+  $cands = @()
   if (Have "py") {
     foreach ($ver in @("3.12", "3.11", "3.13", "3.10")) {
       try {
-        $v = & py "-$ver" -c "import sys, struct; print(sys.executable if struct.calcsize('P') == 8 else '')" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $v -and $v.Trim()) { return $v.Trim() }
+        $v = & py "-$ver" -c "import sys; print(sys.executable)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $v) { $cands += ("$v").Trim() }
       } catch {}
     }
   }
   foreach ($d in @("Python312", "Python311", "Python313", "Python310")) {
     foreach ($base in @((Join-Path $env:LOCALAPPDATA "Programs\Python"), $env:ProgramFiles)) {
-      $c = Join-Path $base "$d\python.exe"
-      if (Test-Path $c) { return $c }
+      $cands += (Join-Path $base "$d\python.exe")
     }
+  }
+  foreach ($c in $cands) {
+    if (Test-Python $c) { return $c }
+    if (Test-Path $c) { Write-Host "Skipping damaged Python: $c" -ForegroundColor Yellow }
   }
   return $null
 }
 
 # ---------------------------------------------------------------- Python
-Step "Checking Python"
-$py = Find-Python
-if (-not $py -and (Have "winget")) {
-  Write-Host "Installing Python 3.12 with winget..."
-  winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements
-  $py = Find-Python
-}
-if (-not $py) {
+# KartCut uses its own private Python 3.12 in .\python so nothing else on the laptop matters.
+Step "Setting up KartCut's own Python 3.12"
+$PrivDir = Join-Path $Root "python"
+$PrivPy = Join-Path $PrivDir "python.exe"
+$py = $null
+if (Test-Python $PrivPy) {
+  $py = $PrivPy
+} else {
+  if (Test-Path $PrivDir) { Remove-Item $PrivDir -Recurse -Force -ErrorAction SilentlyContinue }
   Write-Host "Downloading Python 3.12 from python.org (about 25 MB)..."
   $exe = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
   try {
     Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -OutFile $exe -UseBasicParsing -ErrorAction Stop
-    Write-Host "Installing Python 3.12 (just for your user account, no admin needed)..."
-    $p = Start-Process -FilePath $exe -ArgumentList "/quiet InstallAllUsers=0 PrependPath=0 Include_launcher=1 InstallLauncherAllUsers=0 Include_test=0 Include_doc=0" -Wait -PassThru
+    Write-Host "Installing it into $PrivDir (no admin needed, your other Pythons are left alone)..."
+    $instArgs = "/quiet InstallAllUsers=0 TargetDir=`"$PrivDir`" PrependPath=0 Include_launcher=0 AssociateFiles=0 Shortcuts=0 Include_doc=0"
+    $p = Start-Process -FilePath $exe -ArgumentList $instArgs -Wait -PassThru
     if ($p.ExitCode -ne 0) { Write-Host "Python installer exit code $($p.ExitCode)" -ForegroundColor Yellow }
   } catch {
     Write-Host "Python download failed: $_" -ForegroundColor Yellow
   }
-  $py = Find-Python
+  if (Test-Python $PrivPy) { $py = $PrivPy }
 }
 if (-not $py) {
-  Fail "Could not install Python. Install Python 3.12 (64-bit) from python.org/downloads/windows, then run setup again."
+  Write-Host "Private Python not available, looking for a healthy one already installed..." -ForegroundColor Yellow
+  $py = Find-SystemPython
+}
+if (-not $py) {
+  Fail "Could not get a working Python. Install Python 3.12 (64-bit) from python.org/downloads/windows, then run setup again."
 }
 Write-Host "Using $py" -ForegroundColor Green
 
 # ---------------------------------------------------------------- venv
-Step "Creating KartCut's own Python environment (.venv)"
-if (-not (Test-Path ".venv\Scripts\python.exe")) { & $py -m venv .venv; if ($LASTEXITCODE -ne 0) { Fail "could not create .venv" } }
+Step "Creating KartCut's Python environment (.venv)"
 $vpy = Join-Path $Root ".venv\Scripts\python.exe"
+$marker = Join-Path $Root ".venv\kartcut_base.txt"
+$fresh = $true
+if ((Test-Python $vpy) -and (Test-Path $marker)) {
+  if ((Get-Content $marker -Raw).Trim() -eq $py) { $fresh = $false }
+}
+if ($fresh) {
+  if (Test-Path ".venv") {
+    Write-Host "Removing the old environment (built on a different or damaged Python)..."
+    Remove-Item ".venv" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path ".venv") { Fail "Could not delete the old .venv folder. Close every KartCut window, then run setup again." }
+  }
+  & $py -m venv .venv
+  if ($LASTEXITCODE -ne 0) { Fail "could not create .venv" }
+  Set-Content -Path $marker -Value $py -Encoding ASCII
+}
+if (-not (Test-Python $vpy)) { Fail "The new Python environment failed its self-check." }
 & $vpy -m pip install --upgrade pip wheel setuptools | Out-Host
 
 # ---------------------------------------------------------------- PyTorch + CUDA
