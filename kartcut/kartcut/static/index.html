@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KartCut</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@1,600;1,800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="flag" aria-hidden="true"></span><span class="logo">KartCut</span></div>
+  <button class="proj" id="projBtn" type="button" title="Switch project">No project</button>
+  <nav class="tabs" id="tabs">
+    <button data-tab="ingest" type="button">Ingest</button>
+    <button data-tab="drivers" type="button">Drivers</button>
+    <button data-tab="clips" type="button">Clips</button>
+    <button data-tab="colour" type="button">Colour</button>
+    <button data-tab="montage" type="button">Montage</button>
+  </nav>
+  <div class="chips" id="chips"></div>
+  <div class="job" id="jobBar" hidden>
+    <div class="job-text"><strong id="jobTitle"></strong><span id="jobMsg"></span></div>
+    <div class="bar"><i id="jobFill"></i></div>
+    <button class="link" id="jobCancel" type="button">Cancel</button>
+  </div>
+</header>
+
+<main id="main">
+  <!-- INGEST -->
+  <section class="tab" id="tab-ingest">
+    <div class="cols">
+      <div class="card">
+        <h2>Card offload <small>verified, two drives</small></h2>
+        <p class="hint">Reads each card once, writes to both drives, then re-reads every copy and checks the xxHash. The card is never touched.</p>
+        <div id="offSources" class="rows"></div>
+        <button class="btn ghost" id="offAddSrc" type="button">+ Add card or folder</button>
+        <div class="grid2">
+          <label>Drive A<div class="pick"><input id="offDestA" placeholder="e.g. D:\Footage"><button class="btn small" data-pick="offDestA" type="button">Browse</button></div></label>
+          <label>Drive B<div class="pick"><input id="offDestB" placeholder="e.g. E:\Backup"><button class="btn small" data-pick="offDestB" type="button">Browse</button></div></label>
+        </div>
+        <label>Session folder name<input id="offLabel" placeholder="2026-11-07 Sepang"></label>
+        <label class="check"><input type="checkbox" id="offAdd" checked> Add drive A copy to this project when verified</label>
+        <button class="btn primary" id="offStart" type="button">Start offload</button>
+        <div id="offResult"></div>
+      </div>
+
+      <div class="card">
+        <h2>Footage</h2>
+        <div id="folders" class="rows"></div>
+        <button class="btn ghost" id="addFolder" type="button">+ Add footage folder</button>
+        <div class="grid2">
+          <label>Footage profile (when clip has no metadata)<select id="setProfile"></select></label>
+          <label>Analysis rate<select id="setFps"><option value="0">Auto (8 fps on GPU)</option><option value="4">4 fps (faster)</option><option value="8">8 fps</option><option value="12">12 fps (more accurate)</option></select></label>
+        </div>
+        <label class="check"><input type="checkbox" id="setProxies"> Make preview proxies (lets you play clips here)</label>
+        <div class="row gap">
+          <button class="btn primary" id="analyseNew" type="button">Analyse new clips</button>
+          <button class="btn ghost" id="analyseAll" type="button">Re-analyse everything</button>
+        </div>
+        <p class="hint" id="footStats"></p>
+        <div id="sysInfo" class="sys"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DRIVERS -->
+  <section class="tab" id="tab-drivers">
+    <div class="cols wide-left">
+      <div class="card">
+        <h2>Entry list</h2>
+        <p class="hint">Paste from Excel, Sheets or the timing sheet: <code>number, name, category</code> per line (team optional). Header rows are skipped.</p>
+        <textarea id="entryText" rows="4" placeholder="23, Ahmad Zaki, Senior Max&#10;7, Lee Wei, Junior Max&#10;12, Priya Nair, Micro Max"></textarea>
+        <div class="row gap"><button class="btn" id="entryImport" type="button">Import list</button><button class="btn ghost" id="driverAdd" type="button">+ Add one driver</button></div>
+        <table class="tbl" id="driverTable"></table>
+      </div>
+      <div class="card">
+        <h2>Reference shots <small id="refFor"></small></h2>
+        <p class="hint">Select a driver on the left, then click 1 to 3 clear shots of their kart. Numbers get read automatically; references teach KartCut the helmet, suit and kart colours for when the number is hidden. Every correction you make in Clips is learnt too.</p>
+        <div class="row gap"><label class="check"><input type="checkbox" id="candUnassigned"> Only unidentified karts</label></div>
+        <div id="candidates" class="crops"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CLIPS -->
+  <section class="tab" id="tab-clips">
+    <div class="clips-layout">
+      <aside class="bins" id="bins"></aside>
+      <div class="clips-main">
+        <div class="toolbar">
+          <input id="clipSearch" placeholder="Search clip name">
+          <select id="clipSort"><option value="time">Shooting order</option><option value="score">Best highlights first</option><option value="name">Name</option></select>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="sortDisk" type="button">Sort into driver folders…</button>
+        </div>
+        <div id="clipGrid" class="grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COLOUR -->
+  <section class="tab" id="tab-colour">
+    <div class="cols wide-right">
+      <div class="card">
+        <h2>Shot matching</h2>
+        <div id="hero" class="hero"></div>
+        <label>Exposure match strength <output id="expStrOut"></output><input type="range" id="expStr" min="0" max="1" step="0.05"></label>
+        <label>White balance match strength <output id="wbStrOut"></output><input type="range" id="wbStr" min="0" max="1" step="0.05"></label>
+        <button class="btn primary" id="runMatch" type="button">Generate match LUTs + exposure report</button>
+        <p class="hint">LUTs are S-Log3 in, S-Log3 out (exposure in stops + white balance gains in linear light). Put them before your normal S-Log3 to Rec.709 LUT or CST in Resolve. The montage renderer applies them automatically.</p>
+        <div id="matchResult"></div>
+      </div>
+      <div class="card">
+        <h2>Exposure across the day <small id="sessionInfo"></small></h2>
+        <div id="expChart" class="chart"></div>
+        <div class="row gap"><label class="check"><input type="checkbox" id="expOnlyIssues"> Only clips with issues</label></div>
+        <div class="tbl-wrap"><table class="tbl" id="expTable"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MONTAGE -->
+  <section class="tab" id="tab-montage">
+    <div class="cols wide-right">
+      <div class="card">
+        <h2>Music</h2>
+        <div class="pick"><input id="musicPath" placeholder="Pick a track (mp3, wav, m4a)"><button class="btn small" id="musicPick" type="button">Browse</button></div>
+        <label>Start the track at (seconds)<input id="musicStart" type="number" step="0.1" min="0" value="0"></label>
+        <button class="btn" id="musicAnalyse" type="button">Analyse beats</button>
+        <div id="musicInfo"></div>
+
+        <h2>Edits</h2>
+        <label class="check"><input type="checkbox" id="mEvent" checked> Event montage <input id="mEventLen" type="number" class="num" min="10" max="300" value="60"> s</label>
+        <label class="check"><input type="checkbox" id="mReels" checked> One reel per driver <input id="mReelLen" type="number" class="num" min="8" max="120" value="30"> s</label>
+        <div class="row gap"><label class="check"><input type="checkbox" id="mA169" checked> 16:9</label><label class="check"><input type="checkbox" id="mA916"> 9:16 (auto-reframed)</label></div>
+        <label class="check"><input type="checkbox" id="mIncidents"> Include incidents (per-driver setting on the Drivers tab wins)</label>
+        <label class="check"><input type="checkbox" id="mSlow" checked> Slow motion from high frame rate clips</label>
+        <label>Engine sound under music <output id="mEngOut"></output><input type="range" id="mEng" min="0" max="1" step="0.05"></label>
+        <div class="grid2">
+          <label>Look<select id="mLook"><option value="builtin">KartCut Rec.709</option><option value="custom">My LUT (.cube)</option><option value="log">Log (no LUT)</option></select></label>
+          <label>Frame rate<select id="mFps"><option value="0">Same as footage</option><option value="25">25</option><option value="50">50</option><option value="30">30</option><option value="60">60</option></select></label>
+        </div>
+        <div class="pick" id="lutRow" hidden><input id="mLut" placeholder="Your S-Log3 to Rec.709 .cube"><button class="btn small" id="lutPick" type="button">Browse</button></div>
+        <div class="row gap">
+          <button class="btn primary" id="planBtn" type="button">Plan edits</button>
+          <button class="btn ghost" id="shuffleBtn" type="button" title="Different picks, same rules">Shuffle</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Planned edits</h2>
+        <div id="plans"><p class="hint">Plan the edits to preview every cut before rendering.</p></div>
+        <div class="row gap">
+          <button class="btn primary" id="renderBtn" type="button" disabled>Render all</button>
+          <button class="btn" id="exportBtn" type="button" disabled>Export to Resolve + Premiere only</button>
+        </div>
+        <h2>Outputs</h2>
+        <div id="outputs"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-head"><strong id="dTitle"></strong><button class="link" id="dClose" type="button">Close ✕</button></div>
+  <div class="drawer-body" id="dBody"></div>
+</div>
+
+<div class="modal" id="picker" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><strong id="pkTitle">Choose a folder</strong><button class="link" id="pkClose" type="button">✕</button></div>
+    <div class="pk-path"><button class="btn small" id="pkUp" type="button">Up</button><input id="pkPath"><button class="btn small" id="pkGo" type="button">Go</button></div>
+    <div class="pk-list" id="pkList"></div>
+    <div class="modal-foot"><span class="hint" id="pkHint"></span><button class="btn primary" id="pkSelect" type="button">Use this folder</button></div>
+  </div>
+</div>
+
+<div class="modal" id="projModal" hidden>
+  <div class="modal-box small">
+    <div class="modal-head"><strong>Projects</strong><button class="link" id="projClose" type="button">✕</button></div>
+    <label>New project name<input id="projName" placeholder="Rotax Round 5, Sepang"></label>
+    <label>Save in (optional)<div class="pick"><input id="projPath" placeholder="Default: Documents\KartCut"><button class="btn small" data-pick="projPath" type="button">Browse</button></div></label>
+    <button class="btn primary" id="projCreate" type="button">Create project</button>
+    <h3>Recent</h3>
+    <div id="projRecent" class="rows"></div>
+    <button class="btn ghost" id="projOpen" type="button">Open a project folder…</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

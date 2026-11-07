@@ -50,6 +50,7 @@ plugins:
 # This file will be written everytime page updated
 exclude:
   - _translations/stk-website.pot
+  - kartcut
 
 stk_version: "1.4"
 stk_rc: ""

@@ -1,0 +1,14 @@
+# PyTorch is installed separately by setup.ps1 (it picks the CUDA build for your GPU).
+ultralytics>=8.3.0
+fastapi>=0.110
+uvicorn>=0.29
+numpy>=1.26
+opencv-python>=4.9
+scipy>=1.11
+librosa>=0.10
+soundfile>=0.12
+xxhash>=3.4
+rapidocr_onnxruntime>=1.2.3
+pillow>=10.0
+ftfy
+regex
