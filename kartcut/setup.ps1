@@ -4,27 +4,59 @@
 
 $ErrorActionPreference = "Continue"  # native tools write to stderr; we check exit codes instead
 $ProgressPreference = "SilentlyContinue"
+# Older Windows 10 PowerShell defaults to TLS 1.0, which python.org and gyan.dev refuse.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
 function Step($t) { Write-Host ""; Write-Host "==> $t" -ForegroundColor Yellow }
 function Fail($t) { Write-Host ""; Write-Host "SETUP FAILED: $t" -ForegroundColor Red; exit 1 }
+function Have($cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
-# ---------------------------------------------------------------- Python 3.12
-Step "Checking Python 3.12"
-$py = $null
-try { $v = & py -3.12 -c "import sys; print(sys.executable)" 2>$null; if ($LASTEXITCODE -eq 0 -and $v) { $py = $v.Trim() } } catch {}
-if (-not $py) {
-  $cand = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
-  if (Test-Path $cand) { $py = $cand }
+function Find-Python {
+  # Any 64-bit Python 3.10 to 3.13 works; 3.12 preferred.
+  if (Have "py") {
+    foreach ($ver in @("3.12", "3.11", "3.13", "3.10")) {
+      try {
+        $v = & py "-$ver" -c "import sys, struct; print(sys.executable if struct.calcsize('P') == 8 else '')" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $v -and $v.Trim()) { return $v.Trim() }
+      } catch {}
+    }
+  }
+  foreach ($d in @("Python312", "Python311", "Python313", "Python310")) {
+    foreach ($base in @((Join-Path $env:LOCALAPPDATA "Programs\Python"), $env:ProgramFiles)) {
+      $c = Join-Path $base "$d\python.exe"
+      if (Test-Path $c) { return $c }
+    }
+  }
+  return $null
 }
-if (-not $py) {
+
+# ---------------------------------------------------------------- Python
+Step "Checking Python"
+$py = Find-Python
+if (-not $py -and (Have "winget")) {
   Write-Host "Installing Python 3.12 with winget..."
   winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements
-  $cand = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
-  if (Test-Path $cand) { $py = $cand } else { Fail "Python 3.12 did not install. Install it from python.org, then run setup again." }
+  $py = Find-Python
 }
-Write-Host "Using $py"
+if (-not $py) {
+  Write-Host "Downloading Python 3.12 from python.org (about 25 MB)..."
+  $exe = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
+  try {
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -OutFile $exe -UseBasicParsing -ErrorAction Stop
+    Write-Host "Installing Python 3.12 (just for your user account, no admin needed)..."
+    $p = Start-Process -FilePath $exe -ArgumentList "/quiet InstallAllUsers=0 PrependPath=0 Include_launcher=1 InstallLauncherAllUsers=0 Include_test=0 Include_doc=0" -Wait -PassThru
+    if ($p.ExitCode -ne 0) { Write-Host "Python installer exit code $($p.ExitCode)" -ForegroundColor Yellow }
+  } catch {
+    Write-Host "Python download failed: $_" -ForegroundColor Yellow
+  }
+  $py = Find-Python
+}
+if (-not $py) {
+  Fail "Could not install Python. Install Python 3.12 (64-bit) from python.org/downloads/windows, then run setup again."
+}
+Write-Host "Using $py" -ForegroundColor Green
 
 # ---------------------------------------------------------------- venv
 Step "Creating KartCut's own Python environment (.venv)"
@@ -92,7 +124,7 @@ if (-not (Test-Path $ff)) {
   $zip = Join-Path $env:TEMP "kartcut_ffmpeg.zip"
   $tmp = Join-Path $env:TEMP "kartcut_ffmpeg"
   try {
-    Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zip -ErrorAction Stop
+    Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zip -UseBasicParsing -ErrorAction Stop
     if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
     Expand-Archive -Path $zip -DestinationPath $tmp -Force -ErrorAction Stop
     $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
@@ -101,8 +133,13 @@ if (-not (Test-Path $ff)) {
     Move-Item $inner.FullName (Join-Path $Root "bin\ffmpeg") -ErrorAction Stop
     Remove-Item $zip -Force
   } catch {
-    Write-Host "Direct download failed ($_). Trying winget..." -ForegroundColor Yellow
-    winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements
+    Write-Host "FFmpeg download failed ($_)." -ForegroundColor Yellow
+    if (Have "winget") {
+      Write-Host "Trying winget..."
+      winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements
+    } elseif (-not (Have "ffmpeg")) {
+      Write-Host "Download ffmpeg-release-essentials.zip from gyan.dev, unzip it into $Root\bin and rename the folder to ffmpeg." -ForegroundColor Yellow
+    }
   }
 }
 if (Test-Path $ff) { Write-Host "FFmpeg ready: $ff" -ForegroundColor Green }
