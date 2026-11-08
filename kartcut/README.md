@@ -22,8 +22,8 @@ Built for Sony S-Log3 (S-Gamut3.Cine or S-Gamut3), and also handles Rec.709 and 
 
 ## Install (Windows 10/11, once)
 
-1. Download this folder (or the repo ZIP) to the laptop, e.g. `C:\KartCut`.
-2. Double-click **`setup_windows.bat`**. It installs Python 3.12 if needed, PyTorch for your NVIDIA card, the AI libraries, FFmpeg with NVENC, and downloads the AI models (a few GB in total).
+1. Unzip KartCut onto any drive with space, e.g. `D:\KartCut`. Everything it installs stays inside that folder (about 6 to 8 GB once set up): nothing goes into Windows or onto C:.
+2. Double-click **`setup_windows.bat`**. It sets up a portable Python 3.12 inside the folder (your other Pythons are ignored), PyTorch for your NVIDIA card, the AI libraries, FFmpeg with NVENC, and downloads the AI models.
 3. Do this at home on fast Wi-Fi. After setup KartCut works offline at the track.
 4. Start it with the **KartCut** shortcut on the desktop. It opens in your browser at `http://127.0.0.1:8765`. Keep the black window open while you work.
 
@@ -55,7 +55,7 @@ It works in the free version. Resolve's scripting API can't set clip speed, so s
 
 ## Where things are saved
 
-Each project folder (default `C:\Users\<you>\KartCut\<project>`) holds:
+Each project folder (default `KartCut\projects\<project>`, or wherever you choose when creating it) holds:
 
 - `renders/`: finished edits (H.264, 1080p or 1080x1920)
 - `exports/shot_match/`: match LUTs, CDLs, `exposure_report.csv`
@@ -82,7 +82,8 @@ Tested in a Linux container on a synthetic S-Log3 shoot (19 automated tests in `
 - **Detector shows "YOLO11 COCO (fallback)"**: YOLO-World didn't load (usually CLIP missing). Run setup again; the fallback still works, less accurately.
 - **A clip is sideways or the wrong profile**: open it in Clips > Re-analyse as rotated / pick the profile.
 - **Sort on disk fails with links**: exFAT drives can't hold hard links. Pick a folder on the same NTFS drive as the footage, or choose Copy.
-- Logs: `C:\Users\<you>\KartCut\logs\kartcut.log`.
+- Logs: `KartCut\projects\logs\kartcut.log`.
+- **Setup says Python failed its self-check**: antivirus is blocking files in `KartCut\python`. Allow the KartCut folder in your antivirus, delete the `python` folder, run setup again.
 
 ## Run tests (developers)
 

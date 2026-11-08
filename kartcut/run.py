@@ -10,7 +10,11 @@ import time
 import webbrowser
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+APP = Path(__file__).resolve().parent
+sys.path.insert(0, str(APP))
+# Model downloads (YOLO weights, CLIP) go under the app folder, on the same drive as KartCut.
+os.chdir(APP)
+os.environ.setdefault("YOLO_CONFIG_DIR", str(APP / "models" / "ultralytics"))
 
 from kartcut import config  # noqa: E402
 from kartcut.util import setup_logging  # noqa: E402

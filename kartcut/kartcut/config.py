@@ -12,7 +12,8 @@ from .util import IS_WINDOWS, log, run
 
 APP_DIR = Path(__file__).resolve().parent.parent  # .../kartcut
 MODELS_DIR = Path(os.environ.get("KARTCUT_MODELS", APP_DIR / "models"))
-HOME_DIR = Path(os.environ.get("KARTCUT_HOME", Path.home() / "KartCut"))
+# Projects, logs and recent list live next to the app, so they sit on whatever drive KartCut is on.
+HOME_DIR = Path(os.environ.get("KARTCUT_HOME", APP_DIR / "projects"))
 
 DEFAULT_SETTINGS: dict = {
     # Footage

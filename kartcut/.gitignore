@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 python/
+projects/
+weights/
+.setup_tmp/
+.pipcache/
