@@ -38,17 +38,30 @@ def _place(src: Path, dst: Path, method: str) -> str:
     raise ValueError(method)
 
 
-def sort_on_disk(project, dest: Path, method: str = "link", include_junk: bool = False, progress=None) -> dict:
+ORIENTATIONS = ("all", "split", "horizontal", "vertical")
+
+
+def sort_on_disk(project, dest: Path, method: str = "link", include_junk: bool = False, progress=None,
+                 orientation: str = "all") -> dict:
+    """orientation: all (together) | split (Horizontal/Vertical subfolders per driver) |
+    horizontal (only horizontal clips) | vertical (only vertical clips)."""
+    if orientation not in ORIENTATIONS:
+        raise ValueError(f"orientation must be one of {ORIENTATIONS}")
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     previous = _read_index(dest)
     prev_res = {(r.get("folder"), r.get("clip")): r.get("result") for r in previous}
     summ = [c for c in project.clip_summaries() if c["status"] == "analysed"]
     rows = []
+    in_scope: set[str] = set()
     failed_links = 0
     for i, c in enumerate(summ):
         if progress:
             progress(i / max(1, len(summ)), f"Sorting {c['name']}")
+        vertical = c.get("orientation") == "vertical"
+        if (orientation == "horizontal" and vertical) or (orientation == "vertical" and not vertical):
+            continue
+        in_scope.add(c["name"])
         if c["junk"].get("is_junk"):
             if not include_junk:
                 continue
@@ -61,6 +74,8 @@ def sort_on_disk(project, dest: Path, method: str = "link", include_junk: bool =
                 drv = project.data["drivers"].get(d["id"], {})
                 cat = safe_name(drv.get("category") or "Drivers")
                 targets.append(dest / cat / safe_name(project.driver_label(d["id"])))
+        if orientation == "split":
+            targets = [t / ("Vertical" if vertical else "Horizontal") for t in targets]
         src = Path(c["path"])
         for t in targets:
             for f in [src] + _sidecars(src):
@@ -75,7 +90,9 @@ def sort_on_disk(project, dest: Path, method: str = "link", include_junk: bool =
         if failed_links and method == "link" and failed_links >= 3 and not any(r["result"] == "linked" for r in rows):
             raise RuntimeError("This drive can't hold hard links (exFAT/FAT drives can't). "
                                "Pick a folder on the same NTFS drive as the footage, or choose Copy.")
-    removed = _remove_stale(dest, previous, rows)
+    # clips outside this run's orientation filter keep their old entries untouched
+    rows += [r for r in previous if r.get("clip") not in in_scope]
+    removed = _remove_stale(dest, [r for r in previous if r.get("clip") in in_scope], rows)
     with open(dest / "_KartCut_index.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["clip", "folder", "result", "source"])
         w.writeheader()

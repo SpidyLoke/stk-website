@@ -29,7 +29,7 @@ function setPref(key, v) {
 }
 
 const S = {
-  sel: new Set(), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
+  sel: new Set(), orient: pref("orient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
   candidates: [], groups: [], groupStats: {}, kartView: "groups", exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
@@ -185,7 +185,7 @@ async function onJobFinished(j) {
     h("div", { class: "banner good" }, `${j.result.count} LUTs written`),
     h("button", { class: "btn small", onclick: () => openPath(j.result.folder) }, "Open folder"));
   if (j.kind === "rematch" && j.result) toast(`Re-matched. ${j.result.hd_previews || 0} sharper kart previews, ${j.result.seeds || 0} karts known for sure, the rest matched by look.`);
-  if (j.kind === "sort" && j.result) toast(`Sorted ${j.result.placed} clips into ${j.result.folder}`);
+  if (j.kind === "sort" && j.result) toast(`Sorted ${j.result.placed} clips into ${j.result.folder}${j.result.moved_out ? `, ${j.result.moved_out} moved out of old folders` : ""}`);
   if (j.kind === "analyse" && j.result && j.result.errors) toast(`${j.result.errors} clip(s) failed. See Clips > Pending.`, true);
   refreshTab();
 }
@@ -316,6 +316,8 @@ function clipFilter(c) {
   if (b === "junk") return junk;
   if (b === "pending") return c.status !== "analysed";
   if (c.status !== "analysed" || junk) return false;
+  if (S.orient === "vertical" && c.orientation !== "vertical") return false;
+  if (S.orient === "horizontal" && c.orientation === "vertical") return false;
   if (b === "all") return true;
   if (b === "review") return c.needs_review;
   if (b === "multi") return c.drivers.length > 1;
@@ -367,6 +369,17 @@ function renderClips() {
   if (sp.pending) bin("pending", "Not analysed yet", sp.pending);
 
   const sort = $("#clipSort").value;
+  // orientation toggle shows how many of each the current bin holds
+  const saved = S.orient;
+  S.orient = "all";
+  const inBin = S.clips.filter(clipFilter);
+  S.orient = saved;
+  const nV = inBin.filter((c) => c.orientation === "vertical").length;
+  const counts = { all: inBin.length, horizontal: inBin.length - nV, vertical: nV };
+  $$("#orientSeg button").forEach((btn) => {
+    btn.classList.toggle("on", btn.dataset.v === S.orient);
+    btn.textContent = `${{ all: "All", horizontal: "Horizontal", vertical: "Vertical" }[btn.dataset.v]} ${counts[btn.dataset.v]}`;
+  });
   let list = S.clips.filter(clipFilter);
   if (sort === "score") list.sort((a, b) => b.best_score - a.best_score);
   else if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name));
@@ -840,7 +853,7 @@ function wire() {
   $("#pkPath").addEventListener("keydown", (e) => { if (e.key === "Enter") pkLoad(e.target.value); });
   $("#pkSelect").onclick = () => { if (pk && pk.path) pkDone(pk.path); };
   $("#dClose").onclick = () => ($("#drawer").hidden = true);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#drawer").hidden = true; if (pk) pkDone(null); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#drawer").hidden = true; $("#sortModal").hidden = true; if (pk) pkDone(null); } });
 
   // ingest
   $("#offAddSrc").onclick = async () => {
@@ -895,11 +908,25 @@ function wire() {
   // clips
   $("#clipSearch").oninput = renderClips;
   $("#clipSort").onchange = renderClips;
-  $("#sortDisk").onclick = async () => {
+  $$("#orientSeg button").forEach((b) => (b.onclick = () => { S.orient = b.dataset.v; setPref("orient", S.orient); renderClips(); }));
+  $("#sortDisk").onclick = () => {
+    $("#sortDest").value = pref("sortDest", "");
+    $("#sortOrient").value = S.orient === "all" ? pref("sortOrient", "all") : S.orient;
+    $("#sortMethod").value = pref("sortMethod", "link");
+    $("#sortModal").hidden = false;
+  };
+  $("#sortClose").onclick = () => ($("#sortModal").hidden = true);
+  $("#sortBrowse").onclick = async () => {
     const p = await openPicker({ title: "Where should the driver folders go?" });
-    if (!p) return;
-    const copy = confirm("Copy the files?\n\nOK = copy (uses disk space)\nCancel = hard links (no extra space, same NTFS drive only)");
-    await api("POST", "/api/sort", { dest: p, method: copy ? "copy" : "link" });
+    if (p) $("#sortDest").value = p;
+  };
+  $("#sortGo").onclick = async () => {
+    const dest = $("#sortDest").value.trim();
+    if (!dest) return toast("Pick where the folders should go", true);
+    const body = { dest, method: $("#sortMethod").value, orientation: $("#sortOrient").value, include_junk: $("#sortJunk").checked };
+    setPref("sortDest", dest); setPref("sortOrient", body.orientation); setPref("sortMethod", body.method);
+    await api("POST", "/api/sort", body);
+    $("#sortModal").hidden = true;
     toast("Sorting started");
   };
 

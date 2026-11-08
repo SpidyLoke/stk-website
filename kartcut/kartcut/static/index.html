@@ -101,6 +101,7 @@
         <div class="toolbar">
           <input id="clipSearch" placeholder="Search clip name">
           <select id="clipSort"><option value="time">Shooting order</option><option value="score">Best highlights first</option><option value="name">Name</option></select>
+          <div class="seg" id="orientSeg"><button type="button" data-v="all" class="on">All</button><button type="button" data-v="horizontal">Horizontal</button><button type="button" data-v="vertical">Vertical</button></div>
           <label class="check slim">Size <input type="range" id="cardSize" min="160" max="520" step="10"></label>
           <span class="spacer"></span>
           <button class="btn ghost" id="sortDisk" type="button">Sort into driver folders…</button>
@@ -185,6 +186,26 @@
     <div class="pk-path"><button class="btn small" id="pkUp" type="button">Up</button><input id="pkPath"><button class="btn small" id="pkGo" type="button">Go</button></div>
     <div class="pk-list" id="pkList"></div>
     <div class="modal-foot"><span class="hint" id="pkHint"></span><button class="btn primary" id="pkSelect" type="button">Use this folder</button></div>
+  </div>
+</div>
+
+<div class="modal" id="sortModal" hidden>
+  <div class="modal-box small">
+    <div class="modal-head"><strong>Sort into driver folders</strong><button class="link" id="sortClose" type="button">✕</button></div>
+    <label>Put the folders in<div class="pick"><input id="sortDest" placeholder="e.g. I:\DSLR\YUNG R6 Sorted"><button class="btn small" id="sortBrowse" type="button">Browse</button></div></label>
+    <label>Orientation<select id="sortOrient">
+      <option value="all">Horizontal and vertical together</option>
+      <option value="split">Split each driver into Horizontal / Vertical folders</option>
+      <option value="horizontal">Horizontal clips only</option>
+      <option value="vertical">Vertical clips only</option>
+    </select></label>
+    <label>How<select id="sortMethod">
+      <option value="link">Link (no extra space, same NTFS drive as the footage)</option>
+      <option value="copy">Copy (uses disk space, works on any drive)</option>
+    </select></label>
+    <label class="check"><input type="checkbox" id="sortJunk"> Include a _Junk folder</label>
+    <p class="hint">Your original files are never moved or changed. Run it again after fixing drivers and moved clips leave their old folder.</p>
+    <button class="btn primary" id="sortGo" type="button">Sort now</button>
   </div>
 </div>
 

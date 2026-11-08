@@ -562,7 +562,8 @@ def sort_start(body: dict = Body(...)):
 
     def fn(job: Job):
         return sortdisk.sort_on_disk(p, Path(body["dest"]), body.get("method", "link"),
-                                     bool(body.get("include_junk")), progress=job.set)
+                                     bool(body.get("include_junk")), progress=job.set,
+                                     orientation=body.get("orientation", "all"))
 
     return S.jobs.submit("sort", "Sort clips into driver folders", fn).view()
 

@@ -77,3 +77,18 @@ def test_hd_kart_previews(analysed, tmp_path):
             assert cv2.imread(str(prj.root / tr["crop"])) is not None
     assert fingerprint.refresh(prj) > 0      # fingerprints redone from the new previews
     assert fingerprint.hd_crops(prj) == 0    # nothing left to redo
+
+
+def test_sort_by_orientation(analysed, tmp_path):
+    prj = _copy(analysed, tmp_path)
+    split = tmp_path / "Split"
+    sortdisk.sort_on_disk(prj, split, "link", orientation="split")
+    assert (split / "Senior" / "#23 Ahmad Zaki" / "Horizontal" / "C0002.MP4").exists()
+    assert list(split.rglob("Vertical/C0008.MP4"))                    # the clip shot vertical
+
+    only_v = tmp_path / "VerticalOnly"
+    sortdisk.sort_on_disk(prj, only_v, "link", orientation="vertical")
+    assert list(only_v.rglob("C0008.MP4")) and not list(only_v.rglob("C0002.MP4"))
+    # a horizontal-only pass into the same folder leaves the vertical clips alone
+    sortdisk.sort_on_disk(prj, only_v, "link", orientation="horizontal")
+    assert list(only_v.rglob("C0008.MP4")) and list(only_v.rglob("C0002.MP4"))
