@@ -96,3 +96,13 @@ def test_crop_expression_is_valid_ffmpeg(tmp_path):
     w = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=width,height",
                         "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout.strip()
     assert w == "202,360"
+
+
+def test_beat_gaps_never_make_long_shots():
+    # tracker skipped the first 14 s of the excerpt and a 6 s quiet bridge
+    beats = [14.0 + 0.51 * k for k in range(20)] + [30.0 + 0.51 * k for k in range(60)]
+    music = {"beats": beats, "tempo": 117.5, "downbeat_phase": 0, "drop": None, "duration": 70.0}
+    slots = make_slots(music, 30.0)
+    assert slots[0][0] == 0.0
+    assert max(t1 - t0 for t0, t1, _ in slots) < 6.0
+    assert abs(slots[-1][1] - 30.0) < 2.5

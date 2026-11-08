@@ -92,11 +92,33 @@ def output_fps(project) -> float:
 
 def beat_grid(music: dict | None, length: float) -> tuple[list[float], float, int]:
     if music and music.get("beats"):
-        beats = [b for b in music["beats"] if b <= music["duration"] - 0.2]
+        beats = sorted(b for b in music["beats"] if b <= music["duration"] - 0.2)
         period = 60.0 / max(40.0, float(music.get("tempo") or 120.0))
-        return beats, period, int(music.get("downbeat_phase", 0))
+        return fill_beats(beats, period), period, int(music.get("downbeat_phase", 0))
     period = 0.5
     return list(np.arange(0.0, length + 4.0, period)), period, 0
+
+
+def fill_beats(beats: list[float], period: float) -> list[float]:
+    """Beat trackers skip quiet passages and the first bars of an excerpt. Fill any gap
+    longer than 1.5 beats at the song's tempo, so no shot is stretched over the gap."""
+    if not beats:
+        return beats
+    out = []
+    t = beats[0] - period
+    lead = []
+    while t > 0.05:
+        lead.append(t)
+        t -= period
+    out.extend(reversed(lead))
+    out.append(beats[0])
+    for b in beats[1:]:
+        gap = b - out[-1]
+        if gap > 1.5 * period:
+            n = max(2, int(round(gap / period)))
+            out.extend(out[-1] + gap * k / n for k in range(1, n))
+        out.append(b)
+    return out
 
 
 def make_slots(music: dict | None, length: float) -> list[tuple[float, float, str]]:
@@ -137,6 +159,8 @@ def make_slots(music: dict | None, length: float) -> list[tuple[float, float, st
             while k < j and section(beats[k]) == sec:
                 k += 1
             j = k
+        while j > i + 1 and beats[j] - t0 > 2.0 * SHOT_LEN[sec] + period:  # belt and braces on odd grids
+            j -= 1
         t1 = beats[j]
         if t1 - t0 < 0.45 and slots:  # too short to read: fold into the previous slot
             p0, _, ps = slots[-1]
@@ -169,6 +193,7 @@ def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, 
         return inc_global
 
     pool = []
+    driver_clips = 0
     for seg in project.derived.get("segments", []):
         info = dclips.get(seg["clip"])
         if not info or info.get("junk", {}).get("is_junk"):
@@ -176,10 +201,21 @@ def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, 
         if not incidents_ok(seg):
             continue
         if kind == "driver":
-            if driver_id not in (seg.get("drivers") or []):
+            clip_drivers = {d["id"] for d in (info.get("identity") or {}).get("drivers", [])}
+            if driver_id in (seg.get("drivers") or []):
+                pass
+            elif driver_id in clip_drivers:
+                seg = {**seg, "drivers": list(seg.get("drivers") or []) + [driver_id], "score": seg["score"] * 0.75}
+            else:
                 continue
         pool.append(seg)
+    if kind == "driver":
+        driver_clips = sum(1 for i in dclips.values() if not i.get("junk", {}).get("is_junk") and
+                           driver_id in {d["id"] for d in (i.get("identity") or {}).get("drivers", [])})
     if not pool:
+        if kind == "driver":
+            raise RuntimeError(f"no usable shots ({driver_clips} clips in their bin; check they aren't junk "
+                               "or incidents you've left out)")
         raise RuntimeError("No usable highlights for this montage yet. Analyse footage (and assign drivers) first.")
 
     slots = make_slots(music, length)
@@ -266,7 +302,8 @@ def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, 
             shown_drivers[prev_driver] += 1
 
     if not chosen:
-        raise RuntimeError("Not enough usable footage to build this montage")
+        raise RuntimeError("clips too short for the first cut. Try a shorter reel length or a different "
+                           "start point in the song")
     total = chosen[-1].start_f + chosen[-1].frames
     title = "Event montage" if kind == "event" else f"Reel {project.driver_label(driver_id)}"
     markers = []

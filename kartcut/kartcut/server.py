@@ -699,6 +699,11 @@ def montage_render(body: dict = Body(default={})):
         except RuntimeError as e:
             raise HTTPException(400, str(e))
     plans = list(S.plans)
+    only = body.get("only")
+    if only is not None:
+        plans = [plans[i] for i in only if 0 <= int(i) < len(plans)]
+        if not plans:
+            raise HTTPException(400, "That edit isn't planned any more. Plan again.")
     do_render = body.get("render", True)
     do_export = body.get("export", True)
 
@@ -726,7 +731,8 @@ def montage_render(body: dict = Body(default={})):
             p.save()
         return {"outputs": outs}
 
-    title = f"Render {len(plans)} edit(s)" if do_render else "Export timelines"
+    title = (f"Render {plans[0].name}" if len(plans) == 1 else f"Render {len(plans)} edits") if do_render \
+        else (f"Export {plans[0].name}" if len(plans) == 1 else "Export timelines")
     return S.jobs.submit("render", title, fn).view()
 
 

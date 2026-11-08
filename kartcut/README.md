@@ -43,7 +43,7 @@ Update your NVIDIA driver first if it is old; the installer picks the PyTorch bu
    Set incidents to *Leave out* for anyone who shouldn't have their crash in a reel.
 5. **Clips**: work through *Needs review*. A clip in the wrong driver's bin: open it and use **Move to…** (or **Also in…** when two of your drivers are in shot), or drag clips onto a driver on the left. Ctrl+click or tick several clips to move them together. Every move teaches KartCut. The **All / Horizontal / Vertical** toggle filters any bin by orientation. If you already sorted to folders, run **Sort into driver folders** again and moved clips leave their old folder (only files KartCut put there are touched, never your footage).
 6. **Colour**: pick a hero clip (or let it auto-pick), generate match LUTs and the exposure report.
-7. **Montage**: pick a track, analyse beats, choose event montage and/or per-driver reels, 16:9 and/or 9:16, plan, check the strips, render. Use *Shuffle* for different picks. *Export to Resolve + Premiere* gives you the same edits as editable timelines.
+7. **Montage**: pick a track, analyse beats, choose event montage and/or driver reels (tick which drivers), 16:9 and/or 9:16, plan, check the strips, then **Render this** on one edit or **Render all**. Use *Shuffle* for different picks. *Export to Resolve + Premiere* gives you the same edits as editable timelines.
 
 ### Shooting habits that make it more accurate
 

@@ -29,7 +29,7 @@ function setPref(key, v) {
 }
 
 const S = {
-  showBg: pref("showBg", false), sel: new Set(), orient: pref("orient", "all"), kartOrient: pref("kartOrient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
+  reelOff: pref("reelOff", []), showBg: pref("showBg", false), sel: new Set(), orient: pref("orient", "all"), kartOrient: pref("kartOrient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
   candidates: [], deskFilter: "tosort", deskDriver: null, kSel: new Set(), kLast: null, deskList: [], tileEls: [], box: null, exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
@@ -87,7 +87,7 @@ async function refreshTab() {
   if (S.tab === "drivers") { await loadClips(); await loadCandidates(); renderDrivers(); }
   if (S.tab === "clips") { await loadClips(); renderClips(); }
   if (S.tab === "colour") { await loadExposure(); renderColour(); }
-  if (S.tab === "montage") renderMontage();
+  if (S.tab === "montage") { if (!S.drivers.length) await loadClips(); renderMontage(); }
   if (S.tab === "ingest") renderIngest();
 }
 
@@ -933,11 +933,30 @@ function montageBody() {
   const aspects = [];
   if ($("#mA169").checked) aspects.push("16:9");
   if ($("#mA916").checked) aspects.push("9:16");
-  return { event: $("#mEvent").checked, reels: $("#mReels").checked, aspects,
+  const off = new Set(S.reelOff);
+  const drivers = $("#mReels").checked ? S.drivers.filter((d) => !off.has(d.id)).map((d) => d.id) : [];
+  return { event: $("#mEvent").checked, reels: $("#mReels").checked, drivers, aspects,
     event_length: +$("#mEventLen").value, reel_length: +$("#mReelLen").value, seed: S.seed };
 }
 
+function renderReelPicker() {
+  const el = $("#mDrivers");
+  el.replaceChildren();
+  const off = new Set(S.reelOff);
+  if (!S.drivers.length) { el.append(h("span", { class: "hint" }, "Add drivers on the Drivers tab first.")); return; }
+  el.append(h("button", { class: "link", type: "button", onclick: () => { S.reelOff = []; setPref("reelOff", []); renderReelPicker(); } }, "All"),
+    h("button", { class: "link", type: "button", onclick: () => { S.reelOff = S.drivers.map((d) => d.id); setPref("reelOff", S.reelOff); renderReelPicker(); } }, "None"));
+  for (const d of deskDrivers()) {
+    const on = !off.has(d.id);
+    el.append(h("label", { class: on ? "on" : "" }, h("input", { type: "checkbox", checked: on, onchange: () => {
+      if (on) off.add(d.id); else off.delete(d.id);
+      S.reelOff = [...off]; setPref("reelOff", S.reelOff); renderReelPicker();
+    } }), driverName(d.id)));
+  }
+}
+
 function renderMontage() {
+  renderReelPicker();
   const mi = $("#musicInfo");
   if (S.music) {
     const m = S.music;
@@ -974,17 +993,23 @@ function renderPlans(data) {
   for (const n of data.notes || []) el.append(h("div", { class: "banner warn" }, n));
   el.append(h("div", { class: "legend" }, ["intro", "build", "climax", "outro"].map((s) =>
     h("span", {}, h("i", { style: `background:var(--sec-${s})` }), s))));
-  for (const p of data.plans) {
+  data.plans.forEach((p, idx) => {
     const strip = h("div", { class: "strip" });
     for (const c of p.clips) {
       const w = Math.max(18, Math.round((c.frames / p.fps) * 22));
       strip.append(h("div", { class: `shot ${c.section}`, style: `width:${w}px`, title: `${c.name} @ ${c.src_in.toFixed(1)}s\n${c.label}${c.speed !== 1 ? "\nslow motion" : ""}`, onclick: () => openClip(c.clip_id) },
         c.thumb ? h("img", { src: media(c.thumb), alt: "" }) : null, h("span", {}, (c.speed !== 1 ? "◐ " : "") + c.seg_type)));
     }
+    const one = (render) => async () => {
+      await api("POST", "/api/montage/render", { only: [idx], render, export: !render });
+      toast(render ? `Rendering ${p.name}` : `Exporting ${p.name}`);
+    };
     el.append(h("div", { class: "plan" }, h("div", { class: "plan-h" }, h("strong", {}, p.name),
-      h("span", { class: "hint" }, `${fmtDur(p.duration)} · ${p.clips.length} shots · ${p.fps} fps`)), strip,
+      h("div", { class: "acts" }, h("span", { class: "hint" }, `${fmtDur(p.duration)} · ${p.clips.length} shots · ${p.fps} fps`),
+        h("button", { class: "btn small", type: "button", onclick: one(true) }, "Render this"),
+        h("button", { class: "btn small ghost", type: "button", onclick: one(false) }, "Export this"))), strip,
       ...(p.notes || []).map((n) => h("div", { class: "hint" }, n))));
-  }
+  });
   $("#renderBtn").disabled = !data.plans.length;
   $("#exportBtn").disabled = !data.plans.length;
 }
@@ -1131,7 +1156,7 @@ function wire() {
   };
   $("#planBtn").onclick = plan;
   $("#shuffleBtn").onclick = () => { S.seed += 1; plan(); };
-  $("#renderBtn").onclick = async () => { await api("POST", "/api/montage/render", { render: true, export: true }); toast("Rendering started"); };
+  $("#renderBtn").onclick = async () => { await api("POST", "/api/montage/render", { render: true, export: true }); toast("Rendering all planned edits"); };
   $("#exportBtn").onclick = async () => { await api("POST", "/api/montage/render", { render: false, export: true }); };
 }
 

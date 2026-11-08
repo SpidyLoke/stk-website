@@ -299,3 +299,11 @@ kbd { font: 600 10.5px var(--font); background: var(--bg); border: 1px solid var
 .kbox > .hint { flex: none; margin: 6px 0 0; }
 .kb-status { margin: 8px 0; font-weight: 600; }
 @media (max-width: 900px) { .kb-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } }
+
+/* montage: pick drivers */
+.reelpick { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px 24px; }
+.reelpick label { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); font-size: 12.5px; cursor: pointer; }
+.reelpick label.on { background: #2a240d; border-color: #5a4a14; color: var(--accent); font-weight: 600; }
+.reelpick input { display: none; }
+.reelpick .link { font-size: 12px; }
+.plan-h .acts { display: flex; gap: 6px; align-items: center; }
