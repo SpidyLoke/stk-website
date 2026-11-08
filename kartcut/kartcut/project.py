@@ -48,6 +48,7 @@ class Project:
             data.setdefault(k, {})
         self.data = data
         self.analyses: dict[str, dict] = {}
+        self._id_cache: dict = {"rev": 0}
         self.derived: dict = read_json(self.cache / "derived.json", {}) or {}
         self.save()
 
@@ -78,6 +79,7 @@ class Project:
     def save_analysis(self, cid: str, an: dict) -> None:
         with self.lock:
             self.analyses[cid] = an
+            self._id_cache["rev"] = self._id_cache.get("rev", 0) + 1
             write_json(self.analysis_file(cid), an)
             c = self.data["clips"].get(cid)
             if c:
@@ -218,7 +220,8 @@ class Project:
         d = self.data["drivers"].get(did or "")
         if not d:
             return "Unknown"
-        return f"#{d.get('number', '?')} {d.get('name', '')}".strip()
+        num = str(d.get("number") or "").strip()
+        return (f"#{num} " if num else "") + (d.get("name") or "").strip() or f"#{num}"
 
     # ------------------------------------------------------------------ finalise
     def finalise(self) -> dict:
@@ -243,8 +246,8 @@ class Project:
             med_ev = float(np.median(list(abs_ev.values()))) if abs_ev else 0.0
             med_cast = float(np.median(list(casts.values()))) if casts else 0.0
 
-            models = identify.driver_models(self.data["drivers"], ans, self.data["track_overrides"],
-                                            bool(s.get("learn_from_corrections", True)))
+            id_results, groups, id_stats = identify.identify_project(
+                ans, self.data["drivers"], self.data["track_overrides"], s, self._id_cache)
             derived = {"clips": {}, "segments": [], "updated": time.time(),
                        "session": {"median_ev": med_ev, "median_cast": med_cast}}
             junk_base = {}
@@ -254,10 +257,7 @@ class Project:
                 verdict = exposure_verdict(exp, prof, abs_ev[cid], med_ev, casts[cid], med_cast)
                 ev = events.detect_events(an)
                 segs = events.build_segments(an, ev, sharp_rank, EXP_Q[verdict["level"]])
-                ident = identify.identify_clip(an, self.data["drivers"], models,
-                                               self.data["track_overrides"].get(cid, {}),
-                                               self.data["clip_overrides"].get(cid),
-                                               float(s.get("id_min_prob", 0.55)))
+                ident = identify.identify_clip(an, cid, id_results, self.data["clip_overrides"].get(cid))
                 qual = _quality(an, ident, sharp_rank)
                 junk_base[cid] = _junk_reasons(an, qual, float(s.get("junk_min_duration", 1.0)))
                 tags = sorted({e["type"] for e in ev["events"]} - {"incident"})
@@ -280,6 +280,8 @@ class Project:
                         sg["drivers"] = [d["id"] for d in ident["drivers"]]
                         sg["main_driver"] = ident["main"]
                 derived["segments"].extend(segs)
+            derived["groups"] = groups
+            derived["id_stats"] = id_stats
             dups = _duplicates(ans, self.data["clips"])
             for cid, info in derived["clips"].items():
                 reasons = list(junk_base.get(cid, []))
@@ -375,6 +377,7 @@ class Project:
                 "id": tr["id"], "crop": tr.get("crop"), "t0": F[0][0], "t1": F[-1][0], "n": len(F),
                 "driver": info.get("driver"), "driver_label": self.driver_label(info.get("driver")) if info.get("driver") else None,
                 "prob": info.get("prob"), "source": info.get("source"), "number_read": info.get("number_read"),
+                "other": info.get("other", False),
                 "alts": [{"id": a, "label": self.driver_label(a), "prob": p} for a, p in info.get("alts", [])],
                 "share": round(info.get("share", 0), 3),
                 "is_ref": any(r["clip"] == cid and int(r["track"]) == int(tr["id"])

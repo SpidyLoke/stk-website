@@ -220,3 +220,15 @@ output { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
 .modal-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--raise); border: 1px solid var(--line); padding: 10px 16px; border-radius: 10px; z-index: 50; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); max-width: 90vw; }
 .toast.err { border-color: var(--bad); color: #ffd5d2; }
+
+/* kart groups */
+.seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg button { background: none; border: 0; padding: 5px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); font-weight: 600; }
+.seg button.on { background: var(--raise); color: var(--text); }
+.group { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin: 8px 0; }
+.gcrops { display: flex; gap: 4px; overflow-x: auto; }
+.gcrops img { height: 72px; border-radius: 6px; flex: none; }
+.gfoot { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; font-size: 12.5px; }
+.gfoot select { background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.gfoot .num { color: var(--accent); font-weight: 600; }
+#groupList { max-height: 70vh; overflow: auto; }

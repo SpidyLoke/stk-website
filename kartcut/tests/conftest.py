@@ -42,6 +42,9 @@ def analysed(shoot, tmp_path_factory):
     m._embedder = False
     for cid, c in sorted(prj.data["clips"].items(), key=lambda kv: kv[1]["name"]):
         prj.save_analysis(cid, analyse.analyse_clip(c, prj.root, prj.settings, m))
+    from kartcut import fingerprint
+
+    fingerprint.refresh(prj, m)
     prj.import_entry_list("No\tName\tClass\n23\tAhmad Zaki\tSenior\n7\tLee Wei\tJunior\n12\tPriya Nair\tJunior\n")
     prj.finalise()
     return prj

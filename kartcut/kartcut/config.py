@@ -29,6 +29,7 @@ DEFAULT_SETTINGS: dict = {
     "ocr": True,
     "appearance_embeddings": True,
     "learn_from_corrections": True,
+    "grouping": "normal",                     # strict | normal | loose (kart groups on the Drivers tab)
     # Driver ID thresholds
     "id_min_prob": 0.55,
     # Junk filter

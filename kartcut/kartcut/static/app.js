@@ -23,7 +23,7 @@ function h(tag, attrs = {}, ...kids) {
 
 const S = {
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
-  candidates: [], exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
+  candidates: [], groups: [], groupStats: {}, kartView: "groups", exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
 
 function toast(msg, err = false) {
@@ -62,7 +62,7 @@ const pct = (v) => `${Math.round((v || 0) * 100)}%`;
 const sgn = (v, d = 1) => (v > 0 ? "+" : "") + (+v || 0).toFixed(d);
 const driverName = (id) => {
   const d = S.drivers.find((x) => x.id === id);
-  return d ? `#${d.number} ${d.name || ""}`.trim() : "Unknown";
+  return d ? `${d.number ? "#" + d.number + " " : ""}${d.name || ""}`.trim() : "Unknown";
 };
 
 /* ------------------------------------------------------------------ tabs */
@@ -76,7 +76,7 @@ function showTab(name) {
 
 async function refreshTab() {
   if (!S.status || !S.status.project) return;
-  if (S.tab === "drivers") { await loadClips(); await loadCandidates(); renderDrivers(); }
+  if (S.tab === "drivers") { await loadClips(); await loadCandidates(); await loadGroups(); renderDrivers(); }
   if (S.tab === "clips") { await loadClips(); renderClips(); }
   if (S.tab === "colour") { await loadExposure(); renderColour(); }
   if (S.tab === "montage") renderMontage();
@@ -176,6 +176,7 @@ async function onJobFinished(j) {
   if (j.kind === "shotmatch" && j.result) $("#matchResult").replaceChildren(
     h("div", { class: "banner good" }, `${j.result.count} LUTs written`),
     h("button", { class: "btn small", onclick: () => openPath(j.result.folder) }, "Open folder"));
+  if (j.kind === "rematch" && j.result) toast(`Re-matched: ${j.result.seeds || 0} karts known for sure, the rest matched by look.`);
   if (j.kind === "sort" && j.result) toast(`Sorted ${j.result.placed} clips into ${j.result.folder}`);
   if (j.kind === "analyse" && j.result && j.result.errors) toast(`${j.result.errors} clip(s) failed. See Clips > Pending.`, true);
   refreshTab();
@@ -427,7 +428,7 @@ async function openClip(cid) {
       toast("Saved. KartCut will learn from this.");
       await loadClips(); if (S.tab === "clips") renderClips(); openClip(cid);
     } }, h("option", { value: "auto" }, t.source === "manual" ? "Auto (undo my choice)" : `Auto: ${t.driver_label || "unknown"}`),
-      S.drivers.map((dr) => h("option", { value: dr.id, selected: t.source === "manual" && t.driver === dr.id }, `#${dr.number} ${dr.name}`)),
+      S.drivers.map((dr) => h("option", { value: dr.id, selected: t.source === "manual" && t.driver === dr.id }, driverName(dr.id))),
       h("option", { value: "none", selected: t.source === "manual" && !t.driver }, "Not a race kart / ignore"));
     const refBtn = t.driver ? h("button", { class: "btn small", disabled: t.is_ref, onclick: async () => {
       await api("POST", `/api/drivers/${t.driver}/ref`, { clip: cid, track: t.id, add: true });
@@ -474,6 +475,50 @@ async function loadCandidates() {
   S.candidates = await api("GET", "/api/drivers/candidates");
 }
 
+async function loadGroups() {
+  if (!S.status.project) return;
+  const g = await api("GET", "/api/groups");
+  S.groups = g.groups; S.groupStats = g.stats || {};
+}
+
+async function assignGroup(g, driver) {
+  const r = await api("POST", "/api/groups/assign", { tracks: g.tracks, driver });
+  S.groups = r.groups; S.groupStats = r.stats || {};
+  await loadClips(); await loadCandidates(); renderDrivers();
+  toast(driver === "none" ? "Hidden as other racer" : `Named ${driverName(driver)}. The rest were re-matched.`);
+}
+
+function renderGroups() {
+  const el = $("#groupList");
+  el.replaceChildren();
+  if (!S.groups.length) {
+    el.append(h("p", { class: "hint" }, S.candidates.length
+      ? "No unnamed groups left. Anything still unknown is a one-off: check All karts, or Clips > Needs review."
+      : "Kart groups appear here after analysis."));
+    return;
+  }
+  const drivers = S.drivers.slice().sort((a, b) => (+a.number || 0) - (+b.number || 0));
+  for (const g of S.groups) {
+    const reads = (g.numbers || []).filter((n) => n[1] >= 0.5).map((n) => `#${n[0]}`).join(" / ");
+    const sel = h("select", { onchange: (e) => { if (e.target.value) assignGroup(g, e.target.value); } },
+      h("option", { value: "" }, "This is…"),
+      drivers.map((d) => h("option", { value: d.id }, driverName(d.id))),
+      h("option", { value: "none" }, "Other racer (hide)"));
+    const add = h("button", { class: "btn small ghost", onclick: async () => {
+      const name = prompt("Driver name for this group?");
+      if (!name) return;
+      const num = prompt("Kart number?", (g.numbers && g.numbers[0] && g.numbers[0][0]) || "");
+      const d = await api("POST", "/api/drivers", { name, number: num || "", category: "" });
+      await loadClips();
+      assignGroup(g, d.id);
+    } }, "+ New driver");
+    el.append(h("div", { class: "group" },
+      h("div", { class: "gcrops" }, g.crops.slice(0, 10).map((c) => h("img", { src: media(c), loading: "lazy", alt: "" }))),
+      h("div", { class: "gfoot" }, h("strong", {}, `${g.tracks.length} karts · ${g.clips} clips`),
+        reads ? h("span", { class: "num" }, `reads ${reads}`) : null, h("span", { class: "spacer" }), sel, add)));
+  }
+}
+
 function renderDrivers() {
   const tbl = $("#driverTable");
   tbl.replaceChildren();
@@ -492,7 +537,8 @@ function renderDrivers() {
     const inc = h("select", { onclick: (e) => e.stopPropagation(), onchange: (e) => save(d, { include_incidents: e.target.value === "" ? null : e.target.value === "1" }) },
       h("option", { value: "" }, "Default"), h("option", { value: "1", selected: d.include_incidents === true }, "Include"),
       h("option", { value: "0", selected: d.include_incidents === false }, "Leave out"));
-    const inp = (k, cls = "") => h("input", { class: cls, value: d[k] || "", onclick: (e) => e.stopPropagation(), onchange: (e) => save(d, { [k]: e.target.value }) });
+    const ph = { number: "No.", name: "Name", category: "Class" };
+    const inp = (k, cls = "") => h("input", { class: cls, value: d[k] || "", placeholder: ph[k], onclick: (e) => e.stopPropagation(), onchange: (e) => save(d, { [k]: e.target.value }) });
     tbl.append(h("tr", { class: `clickable${S.selDriver === d.id ? " sel" : ""}`, onclick: () => { S.selDriver = d.id; renderDrivers(); } },
       h("td", { class: "n" }, inp("number", "n")), h("td", {}, inp("name")), h("td", {}, inp("category")),
       h("td", {}, refs), h("td", {}, counts[d.id] ?? 0), h("td", {}, inc),
@@ -504,11 +550,21 @@ function renderDrivers() {
   if (!S.drivers.length) tbl.append(h("tr", {}, h("td", { colspan: 7, class: "hint" }, "No drivers yet. Paste the entry list above.")));
 
   const sel = S.drivers.find((x) => x.id === S.selDriver);
-  $("#refFor").textContent = sel ? `for #${sel.number} ${sel.name}` : "(select a driver)";
+  const groupsView = S.kartView === "groups";
+  $$("#kartView button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.kartView));
+  $("#candUnassigned").parentElement.hidden = groupsView;
+  $("#groupList").hidden = !groupsView;
+  $("#candidates").hidden = groupsView;
+  $("#refFor").textContent = groupsView ? `${S.groups.length} unnamed groups`
+    : (sel ? `references for ${driverName(sel.id)}` : "(select a driver)");
+  $("#kartHint").textContent = groupsView
+    ? "Karts that look alike (helmet, suit and kart colours) are grouped. Name a group once and every clip in it is sorted, then KartCut re-matches the rest. Pick Other racer for competitors you don't need. Kart numbers in the table help too."
+    : "Select a driver on the left, then click 1 to 3 clear shots of their kart as references.";
+  if (groupsView) { renderGroups(); return; }
   const grid = $("#candidates");
   grid.replaceChildren();
   const only = $("#candUnassigned").checked;
-  const list = S.candidates.filter((c) => !only || !c.driver);
+  const list = S.candidates.filter((c) => !only || (!c.driver && !c.other));
   if (!list.length) grid.append(h("p", { class: "hint" }, "Kart shots appear here after analysis."));
   for (const c of list) {
     const isRef = sel && (sel.refs || []).some((r) => r.clip === c.clip && r.track === c.track);
@@ -727,6 +783,8 @@ function wire() {
     S.selDriver = d.id; await loadClips(); renderDrivers();
   };
   $("#candUnassigned").onchange = renderDrivers;
+  $$("#kartView button").forEach((b) => (b.onclick = () => { S.kartView = b.dataset.v; renderDrivers(); }));
+  $("#rematchBtn").onclick = async () => { await api("POST", "/api/rematch", {}); toast("Re-matching karts"); };
 
   // clips
   $("#clipSearch").oninput = renderClips;

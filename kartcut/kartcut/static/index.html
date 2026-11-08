@@ -77,9 +77,15 @@
         <table class="tbl" id="driverTable"></table>
       </div>
       <div class="card">
-        <h2>Reference shots <small id="refFor"></small></h2>
-        <p class="hint">Select a driver on the left, then click 1 to 3 clear shots of their kart. Numbers get read automatically; references teach KartCut the helmet, suit and kart colours for when the number is hidden. Every correction you make in Clips is learnt too.</p>
-        <div class="row gap"><label class="check"><input type="checkbox" id="candUnassigned"> Only unidentified karts</label></div>
+        <h2>Karts <small id="refFor"></small></h2>
+        <div class="row gap">
+          <div class="seg" id="kartView"><button type="button" data-v="groups" class="on">Groups</button><button type="button" data-v="all">All karts</button></div>
+          <label class="check"><input type="checkbox" id="candUnassigned" checked> Only unidentified</label>
+          <span class="spacer"></span>
+          <button class="btn small" id="rematchBtn" type="button" title="Recompute helmet/suit/kart fingerprints and match again">Re-match karts</button>
+        </div>
+        <p class="hint" id="kartHint"></p>
+        <div id="groupList"></div>
         <div id="candidates" class="crops"></div>
       </div>
     </div>

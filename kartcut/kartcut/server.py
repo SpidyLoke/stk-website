@@ -12,7 +12,8 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, analyse, autocut, beats, colour, config, export_nle, offload, render, shotmatch, sortdisk
+from . import (__version__, analyse, autocut, beats, colour, config, export_nle, fingerprint, offload, render,
+               shotmatch, sortdisk)
 from .detect import Models
 from .jobs import Job, JobQueue
 from .project import Project, project_dir_for
@@ -265,6 +266,8 @@ def analyse_start(body: dict = Body(default={})):
                 errors += 1
             if (i + 1) % 10 == 0:
                 p.finalise()
+        job.set(0.97, "Fingerprinting karts (helmet, suit, kart colours)")
+        fingerprint.refresh(p, m)
         job.set(0.99, "Sorting drivers and scoring highlights")
         p.finalise()
         if proxies:
@@ -409,10 +412,47 @@ def driver_candidates():
                 continue
             t = tmap.get(str(tr["id"]), {})
             out.append({"clip": cid, "clip_name": p.data["clips"][cid]["name"], "track": tr["id"], "crop": tr["crop"],
-                        "driver": t.get("driver"), "number_read": t.get("number_read"),
-                        "share": t.get("share", 0), "frames": len(tr["frames"])})
+                        "driver": t.get("driver"), "number_read": t.get("number_read"), "other": t.get("other", False),
+                        "source": t.get("source"), "share": t.get("share", 0), "frames": len(tr["frames"])})
     out.sort(key=lambda x: (-(x["share"] or 0) * x["frames"]))
     return out[:600]
+
+
+@app.post("/api/rematch")
+def rematch(body: dict = Body(default={})):
+    p = proj()
+    m = models()
+
+    def fn(job: Job):
+        job.set(0.0, "Loading appearance model")
+        n = fingerprint.refresh(p, m, progress=job.set, force=bool(body.get("force")))
+        job.set(0.98, "Matching karts to drivers")
+        p.finalise()
+        st = p.derived.get("id_stats", {})
+        return {"clips_updated": n, **st}
+
+    return S.jobs.submit("rematch", "Re-match karts", fn).view()
+
+
+@app.get("/api/groups")
+def groups():
+    p = proj()
+    return {"groups": p.derived.get("groups", []), "stats": p.derived.get("id_stats", {})}
+
+
+@app.post("/api/groups/assign")
+def groups_assign(body: dict = Body(...)):
+    """Name a whole group of lookalike karts at once (driver id, or "none" for another racer)."""
+    p = proj()
+    did = body.get("driver")
+    if did not in p.data["drivers"] and did != "none":
+        raise HTTPException(400, "Unknown driver")
+    with p.lock:
+        for cid, tid in body.get("tracks", []):
+            p.data["track_overrides"].setdefault(cid, {})[str(int(tid))] = did
+        p.save()
+    p.finalise()
+    return {"groups": p.derived.get("groups", []), "stats": p.derived.get("id_stats", {})}
 
 
 # ---------------------------------------------------------------------- colour
