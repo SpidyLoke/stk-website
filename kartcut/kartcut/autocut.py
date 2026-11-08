@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import random
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
 
@@ -49,6 +49,11 @@ class TLClip:
     drivers: list = field(default_factory=list)
     crop: list | None = None      # [(t_rel_source, x_left_fraction)] for 9:16 reframing
     incident: bool = False
+    main_track: int | None = None
+    crop_fixed: float | None = None  # manual 9:16 framing: centre of the crop as a fraction of width
+    seg_a: float = 0.0               # the highlight's usable range in the clip (for the editor)
+    seg_b: float = 0.0
+    seg_peak: float = 0.0
 
 
 @dataclass
@@ -63,10 +68,24 @@ class Timeline:
     music: dict | None
     markers: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    fade_in: bool = False
+    fade_out: bool = True
 
     @property
     def duration(self) -> float:
         return self.frames / self.fps
+
+    @staticmethod
+    def from_dict(d: dict) -> "Timeline":
+        cnames = {f.name for f in fields(TLClip)}
+        tnames = {f.name for f in fields(Timeline)} - {"clips"}
+        clips = []
+        for c in d.get("clips", []):
+            tc = TLClip(**{k: v for k, v in c.items() if k in cnames})
+            if tc.crop:
+                tc.crop = [tuple(x) for x in tc.crop]
+            clips.append(tc)
+        return Timeline(**{k: v for k, v in d.items() if k in tnames}, clips=clips)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -171,11 +190,9 @@ def make_slots(music: dict | None, length: float) -> list[tuple[float, float, st
     return slots
 
 
-def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, music: dict | None,
-         seed: int = 1) -> Timeline:
-    rng = random.Random(seed)
+def segment_pool(project, kind: str, driver_id: str | None) -> tuple[list[dict], int]:
+    """Highlights allowed in this edit (not junk, incidents per your settings, this driver's clips)."""
     s = project.settings
-    fps = output_fps(project)
     dclips = project.derived.get("clips", {})
     drivers = project.data["drivers"]
     inc_global = bool(s.get("include_incidents", False))
@@ -212,6 +229,17 @@ def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, 
     if kind == "driver":
         driver_clips = sum(1 for i in dclips.values() if not i.get("junk", {}).get("is_junk") and
                            driver_id in {d["id"] for d in (i.get("identity") or {}).get("drivers", [])})
+    return pool, driver_clips
+
+
+def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, music: dict | None,
+         seed: int = 1) -> Timeline:
+    rng = random.Random(seed)
+    s = project.settings
+    fps = output_fps(project)
+    dclips = project.derived.get("clips", {})
+    drivers = project.data["drivers"]
+    pool, driver_clips = segment_pool(project, kind, driver_id)
     if not pool:
         if kind == "driver":
             raise RuntimeError(f"no usable shots ({driver_clips} clips in their bin; check they aren't junk "
@@ -294,7 +322,8 @@ def plan(project, kind: str, driver_id: str | None, aspect: str, length: float, 
             label=best.get("label") or best["type"], score=round(best["score"], 4),
             orientation=best["orientation"], transpose=int(an.get("transpose", 0) or 0),
             profile=an.get("profile", "slog3-sgamut3cine"), clip_fps=float(c.get("fps") or fps),
-            drivers=list(best.get("drivers") or []), crop=crop, incident=bool(best.get("incident"))))
+            drivers=list(best.get("drivers") or []), crop=crop, incident=bool(best.get("incident")),
+            main_track=best.get("main_track"), seg_a=best["a"], seg_b=best["b"], seg_peak=best["peak"]))
         used.setdefault(best["clip"], []).append((src_in, src_in + need))
         prev_type, prev_clip = best["type"], best["clip"]
         prev_driver = best.get("main_driver")

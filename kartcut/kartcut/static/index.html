@@ -192,6 +192,36 @@
   </div>
 </div>
 
+<div class="modal" id="editBox" hidden>
+  <div class="modal-box ebox">
+    <div class="modal-head"><strong id="edTitle"></strong>
+      <div class="row gap">
+        <button class="btn small" id="edPreview" type="button">▶ Preview edit</button>
+        <button class="btn small primary" id="edRender" type="button">Render this</button>
+        <button class="btn small ghost" id="edExport" type="button">Export this</button>
+        <button class="link" id="edClose" type="button">Close ✕</button>
+      </div>
+    </div>
+    <div class="ed-opts">
+      <label class="check"><input type="checkbox" id="edFadeIn"> Fade in from black</label>
+      <label class="check"><input type="checkbox" id="edFadeOut"> Fade out at the end</label>
+      <span class="hint" id="edInfo"></span>
+    </div>
+    <div class="ed-strip" id="edStrip"></div>
+    <div class="ed-main">
+      <div class="ed-view">
+        <video id="edVideo" playsinline controls muted></video>
+        <img id="edStill" alt="" hidden>
+        <div class="ed-scrub" id="edScrub" title="Click to start the shot there"><i class="seg"></i><i class="use"></i><i class="head"></i></div>
+        <div class="hint" id="edScrubHint"></div>
+      </div>
+      <div class="ed-panel" id="edPanel"></div>
+    </div>
+    <div class="ed-alts" id="edAlts" hidden></div>
+    <audio id="edAudio" preload="auto"></audio>
+  </div>
+</div>
+
 <div class="modal" id="kartBox" hidden>
   <div class="modal-box kbox">
     <div class="modal-head"><strong id="kbTitle"></strong><button class="link" id="kbClose" type="button">✕</button></div>

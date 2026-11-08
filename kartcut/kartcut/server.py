@@ -12,8 +12,8 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (__version__, analyse, autocut, beats, colour, config, export_nle, fingerprint, offload, render,
-               shotmatch, sortdisk)
+from . import (__version__, analyse, autocut, beats, colour, config, editing, export_nle, fingerprint, offload,
+               render, shotmatch, sortdisk)
 from .detect import Models
 from .jobs import Job, JobQueue
 from .project import Project, project_dir_for
@@ -672,6 +672,37 @@ def _plans(p: Project, body: dict) -> list[autocut.Timeline]:
     return plans
 
 
+def _plan_payload(p: Project, pl: autocut.Timeline) -> dict:
+    d = pl.to_dict()
+    d["beat_frames"] = editing.beat_frames(pl)
+    if d.get("music"):
+        d["music"] = {k: v for k, v in d["music"].items() if k != "beats"}
+    for c in d["clips"]:
+        an = p.load_analysis(c["clip_id"]) or {}
+        cl = p.data["clips"].get(c["clip_id"], {})
+        c["thumb"] = an.get("thumb")
+        c["proxy"] = cl.get("proxy")
+        c["clip_dur"] = cl.get("duration")
+        c["crop"] = None
+    return d
+
+
+def _save_plans(p: Project) -> None:
+    write_json(p.cache / "plans.json", {"plans": [pl.to_dict() for pl in S.plans], "notes": S.plan_notes})
+
+
+def _load_plans(p: Project) -> None:
+    if S.plans:
+        return
+    d = read_json(p.cache / "plans.json") or {}
+    try:
+        S.plans = [autocut.Timeline.from_dict(x) for x in d.get("plans", [])]
+        S.plan_notes = d.get("notes", [])
+    except Exception as e:  # an older or damaged file: just plan again
+        log.warning("Saved edits unreadable: %s", e)
+        S.plans = []
+
+
 @app.post("/api/montage/plan")
 def montage_plan(body: dict = Body(default={})):
     p = proj()
@@ -679,20 +710,55 @@ def montage_plan(body: dict = Body(default={})):
         plans = _plans(p, body)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
-    out = []
-    for pl in plans:
-        d = pl.to_dict()
-        for c in d["clips"]:
-            an = p.load_analysis(c["clip_id"]) or {}
-            c["thumb"] = an.get("thumb")
-            c["crop"] = None
-        out.append(d)
-    return {"plans": out, "notes": S.plan_notes}
+    _save_plans(p)
+    return {"plans": [_plan_payload(p, pl) for pl in plans], "notes": S.plan_notes}
+
+
+@app.get("/api/montage/plans")
+def montage_plans():
+    p = proj()
+    _load_plans(p)
+    return {"plans": [_plan_payload(p, pl) for pl in S.plans], "notes": S.plan_notes}
+
+
+@app.post("/api/montage/edit")
+def montage_edit(body: dict = Body(...)):
+    """One edit to one planned timeline (slip, length, speed, framing, order, replace, insert, delete, fades)."""
+    p = proj()
+    _load_plans(p)
+    i = int(body.get("plan", -1))
+    if not 0 <= i < len(S.plans):
+        raise HTTPException(404, "That edit isn't planned any more. Plan again.")
+    try:
+        editing.apply(p, S.plans[i], body.get("op", ""), body)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(400, str(e))
+    _save_plans(p)
+    return _plan_payload(p, S.plans[i])
+
+
+@app.get("/api/montage/alternatives")
+def montage_alternatives(plan: int):
+    p = proj()
+    _load_plans(p)
+    if not 0 <= plan < len(S.plans):
+        raise HTTPException(404, "That edit isn't planned any more. Plan again.")
+    return editing.alternatives(p, S.plans[plan])
+
+
+@app.get("/api/music/file")
+def music_file():
+    p = proj()
+    path = Path(p.settings.get("music_path") or "")
+    if not path.is_file():
+        raise HTTPException(404, "No music track")
+    return FileResponse(path)
 
 
 @app.post("/api/montage/render")
 def montage_render(body: dict = Body(default={})):
     p = proj()
+    _load_plans(p)
     if not S.plans:
         try:
             _plans(p, body)

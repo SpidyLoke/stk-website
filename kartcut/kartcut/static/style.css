@@ -307,3 +307,43 @@ kbd { font: 600 10.5px var(--font); background: var(--bg); border: 1px solid var
 .reelpick input { display: none; }
 .reelpick .link { font-size: 12px; }
 .plan-h .acts { display: flex; gap: 6px; align-items: center; }
+
+/* shot editor */
+.ebox { width: min(1500px, 97vw); height: 95vh; max-height: 95vh; display: flex; flex-direction: column; overflow: hidden; }
+.ebox .modal-head { gap: 12px; }
+.ebox .modal-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-opts { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; flex: none; }
+.ed-opts label { margin: 4px 0; }
+.ed-strip { display: flex; gap: 3px; overflow-x: auto; padding: 4px 2px 8px; flex: none; }
+.ed-shot { flex: none; position: relative; height: 66px; border-radius: 4px; overflow: hidden; background: #000; border-bottom: 3px solid var(--line); cursor: pointer; }
+.ed-shot img { width: 100%; height: 100%; object-fit: cover; opacity: .85; }
+.ed-shot b { position: absolute; left: 3px; top: 2px; font-size: 10px; background: rgba(0, 0, 0, .75); padding: 0 4px; border-radius: 3px; }
+.ed-shot span { position: absolute; left: 3px; bottom: 2px; font-size: 9.5px; background: rgba(0, 0, 0, .75); padding: 0 4px; border-radius: 3px; white-space: nowrap; }
+.ed-shot.on { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ed-shot.playing { outline: 2px solid #fff; outline-offset: -2px; }
+.ed-shot.intro { border-color: var(--sec-intro); } .ed-shot.build { border-color: var(--sec-build); }
+.ed-shot.climax { border-color: var(--sec-climax); } .ed-shot.outro { border-color: var(--sec-outro); }
+.ed-main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); grid-template-rows: minmax(0, 1fr); gap: 14px; }
+.ed-view { display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+.ed-view video, .ed-view img { flex: 1 1 auto; min-height: 0; width: 100%; object-fit: contain; background: #000; border-radius: 8px; }
+.ed-scrub { position: relative; height: 28px; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; flex: none; }
+.ed-scrub .seg { position: absolute; top: 0; bottom: 0; background: rgba(246, 180, 0, .2); }
+.ed-scrub .use { position: absolute; top: 4px; bottom: 4px; background: var(--accent); border-radius: 3px; opacity: .9; }
+.ed-scrub .head { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; }
+.ed-panel { overflow: auto; min-height: 0; font-size: 13px; padding-right: 4px; }
+.ed-panel h4 { margin: 14px 0 6px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.ed-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ed-btns .btn { margin: 0; }
+.ed-btns .btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.ed-btns input[type=number] { width: 80px; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.ed-btns input[type=range] { width: 200px; accent-color: var(--accent); }
+.ed-val { font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; }
+.ed-alts { flex: none; max-height: 36vh; overflow: auto; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.altgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; margin-top: 8px; }
+.alt { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; position: relative; }
+.alt:hover { border-color: var(--accent); }
+.alt img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; }
+.alt .cap { padding: 4px 6px; font-size: 11.5px; }
+.alt .cap .hint { margin: 0; font-size: 11px; }
+.alt.used::after { content: "in edit"; position: absolute; top: 4px; right: 4px; background: var(--raise); color: var(--muted); font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+@media (max-width: 1000px) { .ed-main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } }

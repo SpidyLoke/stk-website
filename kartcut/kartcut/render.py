@@ -42,7 +42,8 @@ def _crop_expr(crop: list) -> str:
     return f"max(0\\,min(iw-ow\\,iw*({expr})))"
 
 
-def _video_filter(tc: TLClip, aspect: str, lut_name: str, fade_out: float | None, fps: float) -> str:
+def _video_filter(tc: TLClip, aspect: str, lut_name: str, fade_out: float | None, fps: float,
+                  fade_in: bool = False) -> str:
     W, H = SIZES[aspect]
     pre = ["setpts=PTS-STARTPTS"]
     if tc.transpose == 90:
@@ -53,6 +54,8 @@ def _video_filter(tc: TLClip, aspect: str, lut_name: str, fade_out: float | None
     if tc.speed != 1.0:
         post.append(f"setpts=PTS/{tc.speed:.4f}")
     post += [f"fps={fps:.4f}", "tpad=stop_mode=clone:stop_duration=2", "format=yuv420p"]
+    if fade_in:
+        post.append("fade=t=in:st=0:d=0.5")
     if fade_out:
         post.append(f"fade=t=out:st={fade_out:.3f}:d=0.5")
     lut = f"lut3d=file={lut_name}"
@@ -114,11 +117,12 @@ def render_timeline(project, tl: Timeline, out_path: Path, progress=None, cancel
             raise Cancelled()
         lut_name = _lut_for(project, tc, lut_dir, custom)
         dur = tc.frames / tl.fps
-        fade = (dur - 0.5) if i == n - 1 and dur > 0.6 else None
+        fade = (dur - 0.5) if i == n - 1 and dur > 0.6 and getattr(tl, "fade_out", True) else None
+        fade_in = i == 0 and getattr(tl, "fade_in", False)
         vpath = work / f"v{i:03d}.mp4"
         cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", *hw, "-ss", f"{tc.src_in:.4f}",
                "-t", f"{tc.src_dur + 0.25:.4f}", "-i", tc.path,
-               "-filter_complex", _video_filter(tc, tl.aspect, lut_name, fade, tl.fps), "-map", "[v]",
+               "-filter_complex", _video_filter(tc, tl.aspect, lut_name, fade, tl.fps, fade_in), "-map", "[v]",
                "-frames:v", str(tc.frames), "-an", *enc, "-pix_fmt", "yuv420p",
                "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
                "-video_track_timescale", "90000", str(vpath)]
@@ -178,8 +182,10 @@ def render_timeline(project, tl: Timeline, out_path: Path, progress=None, cancel
             cmd += ["-ss", f"{music['start']:.3f}"]
         cmd += ["-i", music["path"]]
         fc = (f"[1:a]volume={eng:.3f}[e];"
-              f"[2:a]aresample=48000,atrim=0:{T:.4f},asetpts=PTS-STARTPTS,afade=t=in:d=0.03,"
-              f"afade=t=out:st={max(0.0, T - 2.0):.3f}:d=2[m];"
+              f"[2:a]aresample=48000,atrim=0:{T:.4f},asetpts=PTS-STARTPTS,"
+              f"afade=t=in:d={0.5 if getattr(tl, 'fade_in', False) else 0.03},"
+              f"afade=t=out:st={max(0.0, T - (2.0 if getattr(tl, 'fade_out', True) else 0.05)):.3f}:"
+              f"d={2.0 if getattr(tl, 'fade_out', True) else 0.05}[m];"
               "[m][e]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]")
     else:
         fc = f"[1:a]volume=1.0,afade=t=out:st={max(0.0, T - 1.0):.3f}:d=1[a]"

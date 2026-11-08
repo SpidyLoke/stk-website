@@ -87,7 +87,14 @@ async function refreshTab() {
   if (S.tab === "drivers") { await loadClips(); await loadCandidates(); renderDrivers(); }
   if (S.tab === "clips") { await loadClips(); renderClips(); }
   if (S.tab === "colour") { await loadExposure(); renderColour(); }
-  if (S.tab === "montage") { if (!S.drivers.length) await loadClips(); renderMontage(); }
+  if (S.tab === "montage") {
+    if (!S.drivers.length) await loadClips();
+    renderMontage();
+    if (!S.planData) {
+      const saved = await api("GET", "/api/montage/plans");
+      if (saved.plans.length) renderPlans(saved);
+    }
+  }
   if (S.tab === "ingest") renderIngest();
 }
 
@@ -726,7 +733,7 @@ function renderDeskBar() {
       allOn ? "Unselect all" : `Select all ${total}`),
     h("strong", {}, n ? `${n} selected →` : "then:"),
     ...actionButtons(n, (d) => sortKarts([...S.kSel], d)),
-    n ? h("button", { class: "link", type: "button", onclick: () => { S.kSel.clear(); renderDesk(); } }, "Clear (Esc)") : null);
+    ...(n ? [h("button", { class: "link", type: "button", onclick: () => { S.kSel.clear(); renderDesk(); } }, "Clear (Esc)")] : []));
 }
 
 async function sortKarts(keys, driver) {
@@ -988,6 +995,7 @@ function renderMontage() {
 }
 
 function renderPlans(data) {
+  S.planData = data;
   const el = $("#plans");
   el.replaceChildren();
   for (const n of data.notes || []) el.append(h("div", { class: "banner warn" }, n));
@@ -1006,12 +1014,223 @@ function renderPlans(data) {
     };
     el.append(h("div", { class: "plan" }, h("div", { class: "plan-h" }, h("strong", {}, p.name),
       h("div", { class: "acts" }, h("span", { class: "hint" }, `${fmtDur(p.duration)} · ${p.clips.length} shots · ${p.fps} fps`),
+        h("button", { class: "btn small primary", type: "button", onclick: () => openEditor(idx) }, "Edit shots"),
         h("button", { class: "btn small", type: "button", onclick: one(true) }, "Render this"),
         h("button", { class: "btn small ghost", type: "button", onclick: one(false) }, "Export this"))), strip,
       ...(p.notes || []).map((n) => h("div", { class: "hint" }, n))));
   });
   $("#renderBtn").disabled = !data.plans.length;
   $("#exportBtn").disabled = !data.plans.length;
+}
+
+/* ------------------------------------------------------------------ shot editor */
+const ED = { plan: -1, data: null, shot: 0, alts: null, altMode: null, previewing: false, timer: null };
+
+async function openEditor(idx) {
+  const all = await api("GET", "/api/montage/plans");
+  if (!all.plans[idx]) { toast("Plan the edits again first", true); return; }
+  ED.plan = idx; ED.data = all.plans[idx]; ED.shot = 0; ED.altMode = null; ED.alts = null;
+  $("#editBox").hidden = false;
+  renderEditor();
+}
+
+async function closeEditor() {
+  stopPreview();
+  $("#editBox").hidden = true;
+  $("#edVideo").pause();
+  renderPlans(await api("GET", "/api/montage/plans"));
+}
+
+async function edit(op, args = {}) {
+  try {
+    ED.data = await api("POST", "/api/montage/edit", { plan: ED.plan, op, shot: ED.shot, ...args });
+  } catch (_) { return; }
+  ED.shot = Math.min(ED.shot, ED.data.clips.length - 1);
+  renderEditor();
+}
+
+const secs = (c, d) => c.frames / d.fps;
+
+function renderEditor() {
+  const d = ED.data;
+  $("#edTitle").textContent = `${d.name} · ${fmtDur(d.duration)} · ${d.clips.length} shots`;
+  $("#edFadeIn").checked = !!d.fade_in;
+  $("#edFadeOut").checked = d.fade_out !== false;
+  $("#edInfo").textContent = d.music ? `Cuts snap to the beat: 1 beat = ${(d.beat_frames / d.fps).toFixed(2)} s` : "";
+  const strip = $("#edStrip");
+  strip.replaceChildren();
+  d.clips.forEach((c, i) => {
+    const w = Math.max(40, Math.round(secs(c, d) * 44));
+    strip.append(h("div", { class: `ed-shot ${c.section}${i === ED.shot ? " on" : ""}`, style: `width:${w}px`,
+      title: `${c.name}\n${c.label} · ${secs(c, d).toFixed(2)} s${c.speed !== 1 ? ` · ${Math.round(c.speed * 100)}%` : ""}`,
+      onclick: () => { stopPreview(); ED.shot = i; renderEditor(); } },
+    c.thumb ? h("img", { src: media(c.thumb), alt: "" }) : null, h("b", {}, String(i + 1)),
+    h("span", {}, `${secs(c, d).toFixed(1)}s ${c.seg_type}`)));
+  });
+  const on = strip.children[ED.shot];
+  if (on) on.scrollIntoView({ block: "nearest", inline: "nearest" });
+  showShot();
+  renderEdPanel();
+  if (ED.altMode) renderAlts();
+}
+
+function showShot() {
+  const d = ED.data;
+  const c = d.clips[ED.shot];
+  const v = $("#edVideo");
+  const still = $("#edStill");
+  if (c.proxy) {
+    still.hidden = true; v.hidden = false;
+    const url = media(c.proxy);
+    const go = () => { v.currentTime = c.src_in; v.playbackRate = c.speed; v.play().catch(() => {}); };
+    if (v.dataset.src !== c.proxy) { v.dataset.src = c.proxy; v.src = url; v.onloadedmetadata = go; } else go();
+  } else {
+    v.pause(); v.hidden = true; still.hidden = false; still.src = c.thumb ? media(c.thumb) : "";
+  }
+  updateScrub();
+  $("#edScrubHint").textContent = c.proxy
+    ? "Yellow = the part used. Shaded = the highlight KartCut found. Click the bar to start the shot there."
+    : "No preview proxy for this clip (turn proxies on under Ingest and re-analyse to play it here).";
+}
+
+function updateScrub() {
+  const c = ED.data.clips[ED.shot];
+  const D = Math.max(0.1, c.clip_dur || (c.src_in + c.src_dur));
+  const pc = (t) => `${Math.max(0, Math.min(100, (t / D) * 100))}%`;
+  const sc = $("#edScrub");
+  sc.querySelector(".seg").style.cssText = `left:${pc(c.seg_a)};width:${pc(c.seg_b - c.seg_a)}`;
+  sc.querySelector(".use").style.cssText = `left:${pc(c.src_in)};width:${pc(c.src_dur)}`;
+  sc.querySelector(".head").style.left = pc($("#edVideo").currentTime || c.src_in);
+}
+
+function renderEdPanel() {
+  const d = ED.data;
+  const c = d.clips[ED.shot];
+  const b = (label, fn, cls = "") => h("button", { class: `btn small ${cls}`, type: "button", onclick: fn }, label);
+  const bf = d.beat_frames;
+  const beats = c.frames / bf;
+  const hfr = (c.clip_fps || d.fps) >= 1.5 * d.fps;
+  const panel = $("#edPanel");
+  const lenInput = h("input", { type: "number", min: "0.2", step: "0.1", value: secs(c, d).toFixed(2) });
+  const showCrop = d.aspect === "9:16" && c.orientation !== "vertical";
+  const cropSlider = h("input", { type: "range", min: "0", max: "100", value: Math.round((c.crop_fixed ?? 0.5) * 100),
+    disabled: c.crop_fixed === null || c.crop_fixed === undefined,
+    onchange: (e) => edit("crop", { x: +e.target.value / 100 }) });
+  panel.replaceChildren(...[
+    h("div", {}, h("strong", {}, `Shot ${ED.shot + 1} of ${d.clips.length}`), " · ", c.name, " · ", c.label, " · ",
+      h("span", { class: "hint" }, c.section)),
+    h("h4", {}, "Which part of the clip"),
+    h("div", { class: "ed-val" }, `starts at ${c.src_in.toFixed(2)} s`, h("span", { class: "hint" }, `  of ${(c.clip_dur || 0).toFixed(1)} s`)),
+    h("div", { class: "ed-btns" },
+      b("−1 s", () => edit("nudge", { by: -1 })), b("−0.2 s", () => edit("nudge", { by: -0.2 })),
+      b("−1 frame", () => edit("nudge", { by: -1 / d.fps })), b("+1 frame", () => edit("nudge", { by: 1 / d.fps })),
+      b("+0.2 s", () => edit("nudge", { by: 0.2 })), b("+1 s", () => edit("nudge", { by: 1 }))),
+    h("div", { class: "ed-btns", style: "margin-top:6px" },
+      b("Start at playhead", () => edit("slip", { src_in: $("#edVideo").currentTime || c.src_in }), "ghost"),
+      b("Centre on highlight", () => edit("slip", { src_in: c.seg_peak - 0.45 * c.src_dur }), "ghost")),
+    h("h4", {}, "Length"),
+    h("div", { class: "ed-val" }, `${secs(c, d).toFixed(2)} s`,
+      d.music ? h("span", { class: "hint" }, `  ${Number.isInteger(+beats.toFixed(2)) ? beats.toFixed(0) : beats.toFixed(1)} beats`) : null),
+    h("div", { class: "ed-btns" },
+      b("−1 bar", () => edit("beats", { by: -4 })), b("−1 beat", () => edit("beats", { by: -1 })),
+      b("+1 beat", () => edit("beats", { by: 1 })), b("+1 bar", () => edit("beats", { by: 4 }))),
+    h("div", { class: "ed-btns", style: "margin-top:6px" }, lenInput, b("Set seconds", () => edit("seconds", { seconds: +lenInput.value }), "ghost"),
+      h("span", { class: "hint" }, "Later shots move to fit.")),
+    h("h4", {}, "Speed"),
+    h("div", { class: "ed-btns" }, [1, 0.75, 0.5].map((sp) => b(`${sp * 100}%`, () => edit("speed", { speed: sp }), c.speed === sp ? "on" : ""))),
+    !hfr && c.speed !== 1 ? h("p", { class: "hint" }, "This clip isn't high frame rate, so slow motion will look choppy.") : null,
+    showCrop ? h("h4", {}, "9:16 framing") : null,
+    showCrop ? h("div", { class: "ed-btns" },
+      h("label", { class: "check" }, h("input", { type: "checkbox", checked: c.crop_fixed === null || c.crop_fixed === undefined,
+        onchange: (e) => edit("crop", { x: e.target.checked ? null : 0.5 }) }), "Follow the kart"),
+      h("span", { class: "hint" }, "or fixed:"), cropSlider) : null,
+    h("h4", {}, "Shot"),
+    h("div", { class: "ed-btns" },
+      b("◀ Earlier", () => { if (ED.shot > 0) { const to = ED.shot - 1; edit("move", { to }).then(() => { ED.shot = to; renderEditor(); }); } }),
+      b("Later ▶", () => { if (ED.shot < d.clips.length - 1) { const to = ED.shot + 1; edit("move", { to }).then(() => { ED.shot = to; renderEditor(); }); } }),
+      b("Replace…", () => openAlts("replace")), b("Add shot after…", () => openAlts("insert")),
+      b("Delete", () => { if (confirm("Delete this shot? Later shots move up.")) edit("delete"); }, "ghost danger")),
+    h("p", { class: "hint", style: "margin-top:12px" }, "Keys: ← → previous / next shot · Space play / pause · Esc close"),
+  ].filter(Boolean));
+}
+
+async function openAlts(mode) {
+  ED.altMode = mode;
+  ED.alts = await api("GET", `/api/montage/alternatives?plan=${ED.plan}`);
+  renderAlts();
+}
+
+function renderAlts() {
+  const box = $("#edAlts");
+  box.hidden = false;
+  const title = ED.altMode === "replace" ? `Replace shot ${ED.shot + 1} with…` : `Add a shot after shot ${ED.shot + 1}…`;
+  box.replaceChildren(h("div", { class: "row gap" }, h("strong", {}, title),
+    h("span", { class: "hint" }, "Best highlights first. Click one."), h("span", { class: "spacer" }),
+    h("button", { class: "link", type: "button", onclick: () => { ED.altMode = null; box.hidden = true; } }, "Close")),
+  h("div", { class: "altgrid" }, (ED.alts || []).map((a) => h("div", { class: `alt${a.in_edit ? " used" : ""}`,
+    onclick: async () => {
+      const mode = ED.altMode;
+      ED.altMode = null; box.hidden = true;
+      if (mode === "insert") { await edit("insert", { after: ED.shot, clip: a.clip, peak: a.peak }); ED.shot += 1; renderEditor(); }
+      else await edit("replace", { clip: a.clip, peak: a.peak });
+    } },
+  a.thumb ? h("img", { src: media(a.thumb), loading: "lazy", alt: "" }) : null,
+  h("div", { class: "cap" }, h("div", {}, a.label), h("div", { class: "hint" }, `${a.name} · ${a.type} · ${a.score.toFixed(2)}`))))));
+}
+
+/* rough preview: shot after shot from the proxies, with the music */
+async function previewEdit() {
+  if (ED.previewing) { stopPreview(); return; }
+  const d = ED.data;
+  ED.previewing = true;
+  $("#edPreview").textContent = "■ Stop preview";
+  const v = $("#edVideo");
+  const audio = $("#edAudio");
+  if (d.music && d.music.path) {
+    audio.src = `/api/music/file?v=${S.ver}`;
+    audio.currentTime = (d.music.start || 0);
+    audio.play().catch(() => {});
+  }
+  for (let i = 0; i < d.clips.length && ED.previewing; i++) {
+    const c = d.clips[i];
+    $$("#edStrip .ed-shot").forEach((el, k) => el.classList.toggle("playing", k === i));
+    const t0 = performance.now();
+    const wanted = (c.frames / d.fps) * 1000;
+    if (c.proxy) {
+      v.hidden = false; $("#edStill").hidden = true;
+      if (v.dataset.src !== c.proxy) {
+        v.dataset.src = c.proxy; v.src = media(c.proxy);
+        await new Promise((r) => { v.onloadedmetadata = r; setTimeout(r, 1500); });
+      }
+      v.currentTime = c.src_in; v.playbackRate = c.speed;
+      v.play().catch(() => {});
+    } else {
+      v.pause(); v.hidden = true; $("#edStill").hidden = false; $("#edStill").src = c.thumb ? media(c.thumb) : "";
+    }
+    if (d.music && d.music.path) audio.currentTime = (d.music.start || 0) + c.start_f / d.fps;
+    const left = wanted - (performance.now() - t0);
+    await new Promise((r) => { ED.timer = setTimeout(r, Math.max(0, left)); });
+  }
+  stopPreview();
+}
+
+function stopPreview() {
+  if (!ED.previewing) return;
+  ED.previewing = false;
+  clearTimeout(ED.timer);
+  $("#edAudio").pause();
+  $("#edPreview").textContent = "▶ Preview edit";
+  $$("#edStrip .ed-shot").forEach((el) => el.classList.remove("playing"));
+  if (ED.data) showShot();
+}
+
+function editorKeys(e) {
+  if ($("#editBox").hidden || ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
+  const n = ED.data.clips.length;
+  if (e.key === "ArrowRight") { e.preventDefault(); stopPreview(); ED.shot = Math.min(n - 1, ED.shot + 1); renderEditor(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); stopPreview(); ED.shot = Math.max(0, ED.shot - 1); renderEditor(); }
+  else if (e.key === " ") { e.preventDefault(); const v = $("#edVideo"); if (v.paused) v.play(); else v.pause(); }
+  else if (e.key === "Escape") { if (!$("#edAlts").hidden) { ED.altMode = null; $("#edAlts").hidden = true; } else closeEditor(); }
 }
 
 /* ------------------------------------------------------------------ wiring */
@@ -1079,6 +1298,30 @@ function wire() {
   };
   $("#deskDriver").onchange = (e) => { S.deskDriver = e.target.value || null; if (S.deskDriver) S.deskFilter = "all"; S.kSel.clear(); renderDrivers(); };
   $("#kbClose").onclick = closeKartBox;
+  $("#edClose").onclick = closeEditor;
+  $("#edPreview").onclick = previewEdit;
+  $("#edRender").onclick = async () => { await api("POST", "/api/montage/render", { only: [ED.plan], render: true, export: false }); toast(`Rendering ${ED.data.name}`); };
+  $("#edExport").onclick = async () => { await api("POST", "/api/montage/render", { only: [ED.plan], render: false, export: true }); toast(`Exporting ${ED.data.name}`); };
+  $("#edFadeIn").onchange = (e) => edit("fades", { fade_in: e.target.checked });
+  $("#edFadeOut").onchange = (e) => edit("fades", { fade_out: e.target.checked });
+  $("#edScrub").onclick = (e) => {
+    const c = ED.data.clips[ED.shot];
+    const r = e.currentTarget.getBoundingClientRect();
+    const t = ((e.clientX - r.left) / r.width) * (c.clip_dur || 0);
+    edit("slip", { src_in: t });
+  };
+  $("#edVideo").addEventListener("timeupdate", () => {
+    if ($("#editBox").hidden || !ED.data) return;
+    const c = ED.data.clips[ED.shot];
+    const v = $("#edVideo");
+    const t = v.currentTime;
+    const end = c.src_in + c.src_dur;
+    // loop the chosen part while it plays, but let you scrub anywhere to find a new start
+    if (!ED.previewing && !v.seeking && ED.lastT !== undefined && ED.lastT >= c.src_in - 0.05 && ED.lastT < end && t >= end) v.currentTime = c.src_in;
+    ED.lastT = t;
+    updateScrub();
+  });
+  document.addEventListener("keydown", editorKeys);
   $("#showBg").checked = !!S.showBg;
   $("#showBg").onchange = (e) => { S.showBg = e.target.checked; setPref("showBg", S.showBg); S.kSel.clear(); renderDesk(); };
   document.addEventListener("keydown", deskKeys);
