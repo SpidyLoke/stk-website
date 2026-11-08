@@ -144,6 +144,43 @@ def hd_crops(project, progress=None, cancelled=None) -> int:
     return done
 
 
+def context_image(project, cid: str, tid: int) -> str | None:
+    """The whole frame with the kart boxed, so you can see what a crop actually is."""
+    from . import colour as C
+    from . import media
+
+    rel = f"cache/context/{cid}_{tid}.jpg"
+    out = Path(project.root) / rel
+    if out.exists():
+        return rel
+    an = project.load_analysis(cid)
+    if not an:
+        return None
+    tr = next((t for t in an.get("tracks", []) if int(t["id"]) == int(tid)), None)
+    path = Path(an["path"])
+    if not tr or not path.exists():
+        return None
+    best = max(tr["frames"], key=lambda f: (f[3] - f[1]) * (f[4] - f[2]) * (0.3 + f[6]) * f[5])
+    pr = media.probe(path)
+    rd = media.FrameReader(path, pr, long_side=1280, start=max(0.0, best[0]), duration=0.4,
+                           transpose=int(an.get("transpose") or 0))
+    frame = None
+    for _, _, fr in rd:
+        frame = fr.copy()
+        break
+    rd.close()
+    if frame is None:
+        return None
+    img = C.display_bgr_u8(frame, C.get_profile(an.get("profile")))
+    k = rd.w / float(an.get("analysis_w") or 1280)
+    x1, y1, x2, y2 = [int(round(v * k)) for v in best[1:5]]
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), 6)
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 180, 246), 3)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return rel
+
+
 def refresh(project, models=None, progress=None, force: bool = False) -> int:
     """Add fp2 (+ CLIP embeddings when available) to every track that lacks them."""
     embedder = None

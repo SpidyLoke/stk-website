@@ -77,19 +77,19 @@
         <table class="tbl" id="driverTable"></table>
       </div>
       <div class="card">
-        <h2>Karts <small id="refFor"></small></h2>
+        <h2>Sort karts <small id="deskInfo"></small></h2>
+        <div class="seg wrap" id="deskFilters"></div>
         <div class="row gap">
-          <div class="seg" id="kartView"><button type="button" data-v="groups" class="on">Groups</button><button type="button" data-v="all">All karts</button></div>
+          <select id="deskDriver" class="plain"></select>
           <div class="seg" id="kartOrient"><button type="button" data-v="all" class="on">All</button><button type="button" data-v="horizontal">Horizontal</button><button type="button" data-v="vertical">Vertical</button></div>
-          <label class="check"><input type="checkbox" id="candUnassigned" checked> Only unidentified</label>
           <label class="check"><input type="checkbox" id="helmetMode"> Helmet close-up</label>
           <label class="check slim">Size <input type="range" id="cropSize" min="90" max="340" step="10"></label>
           <span class="spacer"></span>
-          <button class="btn small" id="rematchBtn" type="button" title="Recompute helmet/suit/kart fingerprints and match again">Re-match karts</button>
+          <button class="btn small" id="rematchBtn" type="button" title="Sharper previews + match everything again">Re-match karts</button>
         </div>
-        <p class="hint" id="kartHint"></p>
-        <div id="groupList"></div>
-        <div id="candidates" class="crops"></div>
+        <p class="hint">Click karts to select them (Shift-click for a range, or <b>Select group</b> for lookalikes). Then press a driver below or its number key. <kbd>O</kbd> other racer, <kbd>X</kbd> not a kart (wrong detection, removed everywhere), <kbd>U</kbd> back to automatic. <b>⤢</b> shows the whole frame; in there <kbd>←</kbd> <kbd>→</kbd> step through one by one.</p>
+        <div class="deskbar" id="deskBar"></div>
+        <div id="desk" class="desk"><div id="deskGrid" class="crops"></div></div>
       </div>
     </div>
   </section>
@@ -187,6 +187,19 @@
     <div class="pk-path"><button class="btn small" id="pkUp" type="button">Up</button><input id="pkPath"><button class="btn small" id="pkGo" type="button">Go</button></div>
     <div class="pk-list" id="pkList"></div>
     <div class="modal-foot"><span class="hint" id="pkHint"></span><button class="btn primary" id="pkSelect" type="button">Use this folder</button></div>
+  </div>
+</div>
+
+<div class="modal" id="kartBox" hidden>
+  <div class="modal-box kbox">
+    <div class="modal-head"><strong id="kbTitle"></strong><button class="link" id="kbClose" type="button">✕</button></div>
+    <div class="kb-body">
+      <div class="kb-frame"><img id="kbFrame" alt=""><span id="kbFrameMsg" class="hint"></span></div>
+      <div class="kb-side"><img id="kbCrop" alt=""><div id="kbStatus" class="kb-status"></div>
+        <button class="btn small ghost" id="kbOpenClip" type="button">Open this clip</button></div>
+    </div>
+    <div class="deskbar" id="kbActions"></div>
+    <p class="hint"><kbd>←</kbd> <kbd>→</kbd> previous / next kart · number keys, <kbd>O</kbd>, <kbd>X</kbd>, <kbd>U</kbd> sort it and move on · <kbd>Esc</kbd> closes</p>
   </div>
 </div>
 

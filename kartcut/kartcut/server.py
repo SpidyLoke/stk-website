@@ -435,22 +435,60 @@ def driver_ref(did: str, body: dict = Body(...)):
 
 @app.get("/api/drivers/candidates")
 def driver_candidates():
-    """Every kart crop in the project, biggest first, for picking reference shots."""
+    """Every kart in the project for the sorting desk, with its status and lookalike group."""
     p = proj()
     out = []
+    groups = p.derived.get("track_group", {})
+    sizes: dict[int, int] = {}
+    for g in groups.values():
+        sizes[g] = sizes.get(g, 0) + 1
     for cid, info in p.derived.get("clips", {}).items():
         an = p.load_analysis(cid) or {}
         tmap = info.get("identity", {}).get("tracks", {})
+        ovr = p.data["track_overrides"].get(cid, {})
         for tr in an.get("tracks", []):
             if not tr.get("crop"):
                 continue
             t = tmap.get(str(tr["id"]), {})
+            notkart = ovr.get(str(tr["id"])) == "notkart"
+            gid = groups.get(f"{cid}|{tr['id']}", -1)
             out.append({"clip": cid, "clip_name": p.data["clips"][cid]["name"], "track": tr["id"], "crop": tr["crop"],
-                        "orientation": an.get("orientation", "horizontal"),
-                        "driver": t.get("driver"), "number_read": t.get("number_read"), "other": t.get("other", False),
-                        "source": t.get("source"), "share": t.get("share", 0), "frames": len(tr["frames"])})
-    out.sort(key=lambda x: (-(x["share"] or 0) * x["frames"]))
-    return out[:600]
+                        "orientation": an.get("orientation", "horizontal"), "driver": None if notkart else t.get("driver"),
+                        "number_read": t.get("number_read"), "other": bool(t.get("other")) and not notkart,
+                        "notkart": notkart, "source": "manual" if notkart else t.get("source"),
+                        "prob": t.get("prob", 0), "group": gid, "group_size": sizes.get(gid, 1),
+                        "t0": tr["frames"][0][0], "t1": tr["frames"][-1][0], "frames": len(tr["frames"])})
+    out.sort(key=lambda x: (-x["group_size"], x["group"], -x["frames"]))
+    return out
+
+
+@app.post("/api/karts/assign")
+def karts_assign(body: dict = Body(...)):
+    """Sort karts from the desk. driver: a driver id, "none" (other racer), "notkart"
+    (wrong detection: removed everywhere) or null (back to automatic)."""
+    p = proj()
+    did = body.get("driver")
+    if did is not None and did not in p.data["drivers"] and did not in ("none", "notkart"):
+        raise HTTPException(400, "Unknown driver")
+    with p.lock:
+        for cid, tid in body.get("tracks", []):
+            tmap = p.data["track_overrides"].setdefault(cid, {})
+            if did is None:
+                tmap.pop(str(int(tid)), None)
+            else:
+                tmap[str(int(tid))] = did
+        p.save()
+    p.finalise()
+    return {"ok": True, "stats": p.derived.get("id_stats", {})}
+
+
+@app.get("/api/karts/context")
+def kart_context(clip: str, track: int):
+    p = proj()
+    rel = fingerprint.context_image(p, clip, int(track))
+    if not rel:
+        raise HTTPException(404, "Could not read that frame from the clip")
+    return {"url": rel}
 
 
 @app.post("/api/rematch")

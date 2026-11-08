@@ -227,7 +227,14 @@ class Project:
     def finalise(self) -> dict:
         """Recompute everything derived from analyses. No decoding, takes a second or two."""
         with self.lock:
-            ans = self.all_analyses()
+            ans_all = self.all_analyses()
+            notkart = {(cid, str(tid)) for cid, tmap in self.data["track_overrides"].items()
+                       for tid, v in tmap.items() if v == "notkart"}
+            ans = {}
+            for cid, an in ans_all.items():  # wrong detections (not a kart) drop out of every calculation
+                if any(k[0] == cid for k in notkart):
+                    an = {**an, "tracks": [t for t in an.get("tracks", []) if (cid, str(t["id"])) not in notkart]}
+                ans[cid] = an
             s = self.settings
             # sharpness normalisation across the whole shoot
             vals = [f[6] for an in ans.values() for tr in an.get("tracks", []) for f in tr["frames"]]
@@ -246,7 +253,7 @@ class Project:
             med_ev = float(np.median(list(abs_ev.values()))) if abs_ev else 0.0
             med_cast = float(np.median(list(casts.values()))) if casts else 0.0
 
-            id_results, groups, id_stats = identify.identify_project(
+            id_results, groups, id_stats, track_group = identify.identify_project(
                 ans, self.data["drivers"], self.data["track_overrides"], s, self._id_cache)
             derived = {"clips": {}, "segments": [], "updated": time.time(),
                        "session": {"median_ev": med_ev, "median_cast": med_cast}}
@@ -282,6 +289,7 @@ class Project:
                 derived["segments"].extend(segs)
             derived["groups"] = groups
             derived["id_stats"] = id_stats
+            derived["track_group"] = track_group
             dups = _duplicates(ans, self.data["clips"])
             for cid, info in derived["clips"].items():
                 reasons = list(junk_base.get(cid, []))
@@ -378,6 +386,7 @@ class Project:
                 "driver": info.get("driver"), "driver_label": self.driver_label(info.get("driver")) if info.get("driver") else None,
                 "prob": info.get("prob"), "source": info.get("source"), "number_read": info.get("number_read"),
                 "other": info.get("other", False),
+                "notkart": self.data["track_overrides"].get(cid, {}).get(str(tr["id"])) == "notkart",
                 "alts": [{"id": a, "label": self.driver_label(a), "prob": p} for a, p in info.get("alts", [])],
                 "share": round(info.get("share", 0), 3),
                 "is_ref": any(r["clip"] == cid and int(r["track"]) == int(tr["id"])

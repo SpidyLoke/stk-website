@@ -229,7 +229,29 @@ def identify_project(ans: dict[str, dict], drivers: dict, overrides: dict, setti
 
     groups = _groups(tracks, S, results, T, settings)
     stats = {"threshold": round(T, 3), "negatives": len(neg), "seeds": len(seeds), "tracks": n}
-    return results, groups, stats
+    labels = _cluster(tracks, S, [i for i, t in enumerate(tracks) if t.get("crop")], T, settings)
+    track_group = {f"{tracks[i]['_cid']}|{tracks[i]['_tid']}": g for i, g in labels.items()}
+    return results, groups, stats, track_group
+
+
+def _cluster(tracks, S, idx, T, settings) -> dict[int, int]:
+    """Lookalike clusters (average linkage). Karts sharing a frame never cluster together."""
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+
+    if len(idx) == 0:
+        return {}
+    if len(idx) == 1:
+        return {idx[0]: 1}
+    D = 1.0 - S[np.ix_(idx, idx)].astype(np.float64)
+    pos = {k: j for j, k in enumerate(idx)}
+    for a, b in _same_frame_pairs(tracks, idx):
+        D[pos[a], pos[b]] = D[pos[b], pos[a]] = 1.0
+    np.fill_diagonal(D, 0.0)
+    strict = {"strict": 0.0, "normal": 0.02, "loose": 0.06}.get(settings.get("grouping", "normal"), 0.02)
+    Z = linkage(squareform(np.clip(D, 0, 1), checks=False), method="average")
+    lab = fcluster(Z, t=max(0.01, 1.0 - T + strict), criterion="distance")
+    return {k: int(g) for k, g in zip(idx, lab)}
 
 
 def _groups(tracks, S, results, T, settings) -> list[dict]:

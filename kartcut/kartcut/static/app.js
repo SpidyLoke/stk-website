@@ -31,7 +31,7 @@ function setPref(key, v) {
 const S = {
   sel: new Set(), orient: pref("orient", "all"), kartOrient: pref("kartOrient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
-  candidates: [], groups: [], groupStats: {}, kartView: "groups", exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
+  candidates: [], deskFilter: "tosort", deskDriver: null, kSel: new Set(), kLast: null, deskList: [], tileEls: [], box: null, exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
 
 function toast(msg, err = false) {
@@ -84,7 +84,7 @@ function showTab(name) {
 
 async function refreshTab() {
   if (!S.status || !S.status.project) return;
-  if (S.tab === "drivers") { await loadClips(); await loadCandidates(); await loadGroups(); renderDrivers(); }
+  if (S.tab === "drivers") { await loadClips(); await loadCandidates(); renderDrivers(); }
   if (S.tab === "clips") { await loadClips(); renderClips(); }
   if (S.tab === "colour") { await loadExposure(); renderColour(); }
   if (S.tab === "montage") renderMontage();
@@ -534,7 +534,8 @@ async function openClip(cid) {
       await loadClips(); if (S.tab === "clips") renderClips(); openClip(cid);
     } }, h("option", { value: "auto" }, t.source === "manual" ? "Auto (undo my choice)" : `Auto: ${t.driver_label || "unknown"}`),
       S.drivers.map((dr) => h("option", { value: dr.id, selected: t.source === "manual" && t.driver === dr.id }, driverName(dr.id))),
-      h("option", { value: "none", selected: t.source === "manual" && !t.driver }, "Not a race kart / ignore"));
+      h("option", { value: "none", selected: t.source === "manual" && !t.driver && !t.notkart }, "Other racer"),
+      h("option", { value: "notkart", selected: !!t.notkart }, "Not a kart (wrong detection)"));
     const refBtn = t.driver ? h("button", { class: "btn small", disabled: t.is_ref, onclick: async () => {
       await api("POST", `/api/drivers/${t.driver}/ref`, { clip: cid, track: t.id, add: true });
       toast("Added as reference shot"); openClip(cid);
@@ -542,7 +543,7 @@ async function openClip(cid) {
     const alts = (t.alts || []).filter((x) => x.id !== t.driver).slice(0, 2).map((x) => `${x.label} ${pct(x.prob)}`).join(", ");
     body.append(h("div", { class: "track" }, t.crop ? h("img", { src: media(t.crop), alt: "" }) : null,
       h("div", { class: "info" },
-        h("div", {}, h("strong", {}, t.driver_label || "Unknown"), t.prob ? h("span", { class: "hint" }, `  ${pct(t.prob)}${t.source === "manual" ? " (you)" : ""}`) : null),
+        h("div", {}, h("strong", {}, t.notkart ? "Not a kart" : t.other ? "Other racer" : (t.driver_label || "Unknown")), t.prob ? h("span", { class: "hint" }, `  ${pct(t.prob)}${t.source === "manual" ? " (you)" : ""}`) : null),
         h("div", { class: "hint" }, `Number read: ${t.number_read ? "#" + t.number_read : "none"} · on screen ${t.t0.toFixed(1)} to ${t.t1.toFixed(1)}s · ${pct(t.share)} of kart time`),
         alts ? h("div", { class: "hint" }, `Also possible: ${alts}`) : null),
       h("div", {}, sel, refBtn)));
@@ -580,19 +581,7 @@ async function loadCandidates() {
   S.candidates = await api("GET", "/api/drivers/candidates");
 }
 
-async function loadGroups() {
-  if (!S.status.project) return;
-  const g = await api("GET", "/api/groups");
-  S.groups = g.groups; S.groupStats = g.stats || {};
-}
-
-async function assignGroup(g, driver) {
-  const r = await api("POST", "/api/groups/assign", { tracks: g.tracks, driver });
-  S.groups = r.groups; S.groupStats = r.stats || {};
-  await loadClips(); await loadCandidates(); renderDrivers();
-  toast(driver === "none" ? "Hidden as other racer" : `Named ${driverName(driver)}. The rest were re-matched.`);
-}
-
+const kkey = (c) => `${c.clip}|${c.track}`;
 const orientOk = (o) => S.kartOrient === "all" || (S.kartOrient === "vertical" ? o === "vertical" : o !== "vertical");
 
 function setKartOrientCounts(items) {
@@ -604,43 +593,215 @@ function setKartOrientCounts(items) {
   });
 }
 
-function renderGroups() {
-  const el = $("#groupList");
-  el.replaceChildren();
-  if (!S.groups.length) {
-    el.append(h("p", { class: "hint" }, S.candidates.length
-      ? "No unnamed groups left. Anything still unknown is a one-off: check All karts, or Clips > Needs review."
-      : "Kart groups appear here after analysis."));
+const DESK_FILTERS = [
+  ["tosort", "To sort", (c) => !c.driver && !c.other && !c.notkart],
+  ["auto", "Auto-matched", (c) => (c.driver || c.other) && c.source !== "manual" && !c.notkart],
+  ["mine", "Sorted by you", (c) => c.source === "manual" && !c.notkart],
+  ["other", "Other racers", (c) => c.other],
+  ["notkart", "Not karts", (c) => c.notkart],
+  ["all", "All", (c) => !c.notkart],
+];
+
+function deskDrivers() {
+  return S.drivers.slice().sort((a, b) => (a.category || "").localeCompare(b.category || "") ||
+    (+a.number || 0) - (+b.number || 0) || (a.name || "").localeCompare(b.name || ""));
+}
+
+function deskStatus(c) {
+  if (c.notkart) return { cls: "st-notkart", label: "Not a kart" };
+  if (c.other) return { cls: "st-other", label: c.source === "manual" ? "Other racer ✓" : "Other racer?" };
+  if (c.driver && c.source === "manual") return { cls: "st-mine", label: `${driverName(c.driver)} ✓` };
+  if (c.driver && c.source === "number") return { cls: "st-auto", label: `${driverName(c.driver)} (number)` };
+  if (c.driver) return { cls: "st-auto", label: `${driverName(c.driver)}? ${pct(c.prob)}` };
+  return { cls: "st-unknown", label: "?" };
+}
+
+function topReads(members) {
+  const v = {};
+  for (const m of members) if (m.number_read) v[m.number_read] = (v[m.number_read] || 0) + 1;
+  return Object.entries(v).sort((a, b) => b[1] - a[1]).slice(0, 2).filter((e) => e[1] >= 2).map((e) => `#${e[0]}`).join(" / ");
+}
+
+function renderDesk() {
+  const desk = $("#desk");
+  desk.style.setProperty("--cw", `${S.cropSize}px`);
+  desk.classList.toggle("helmet", !!S.helmet);
+  const drvOk = (c) => !S.deskDriver || c.driver === S.deskDriver;
+  const fbar = $("#deskFilters");
+  fbar.replaceChildren();
+  for (const [k, label, fn] of DESK_FILTERS) {
+    const n = S.candidates.filter((c) => fn(c) && drvOk(c) && orientOk(c.orientation)).length;
+    fbar.append(h("button", { type: "button", class: S.deskFilter === k ? "on" : "",
+      onclick: () => { S.deskFilter = k; S.kSel.clear(); renderDesk(); } }, `${label} ${n}`));
+  }
+  const fn = DESK_FILTERS.find((f) => f[0] === S.deskFilter)[2];
+  const inFilter = S.candidates.filter((c) => fn(c) && drvOk(c));
+  setKartOrientCounts(inFilter.map((c) => c.orientation || "horizontal"));
+  const list = inFilter.filter((c) => orientOk(c.orientation || "horizontal"));
+  S.deskList = list;
+  const dsel = $("#deskDriver");
+  dsel.replaceChildren(h("option", { value: "" }, "Any driver"),
+    ...deskDrivers().map((d) => h("option", { value: d.id, selected: S.deskDriver === d.id }, driverName(d.id))));
+  const left = S.candidates.filter((c) => DESK_FILTERS[0][2](c)).length;
+  $("#deskInfo").textContent = `${left} still to sort · ${S.candidates.filter((c) => !c.notkart).length} karts`;
+  renderDeskBar();
+  const grid = $("#deskGrid");
+  grid.replaceChildren();
+  S.tileEls = [];
+  if (!list.length) {
+    grid.append(h("p", { class: "hint" }, S.candidates.length ? "Nothing here. Try another filter above." : "Karts appear here after analysis."));
     return;
   }
-  const drivers = S.drivers.slice().sort((a, b) => (+a.number || 0) - (+b.number || 0));
-  setKartOrientCounts(S.groups.flatMap((g) => g.orients || g.tracks.map(() => "horizontal")));
-  let shown = 0;
-  for (const g0 of S.groups) {
-    const keep = g0.tracks.map((_, i) => orientOk((g0.orients || [])[i] || "horizontal"));
-    if (!keep.some(Boolean)) continue;
-    const g = { ...g0, tracks: g0.tracks.filter((_, i) => keep[i]), crops: g0.crops.filter((_, i) => keep[i]) };
-    g.clips = new Set(g.tracks.map((t) => t[0])).size;
-    shown += 1;
-    const reads = (g.numbers || []).filter((n) => n[1] >= 0.5).map((n) => `#${n[0]}`).join(" / ");
-    const sel = h("select", { onchange: (e) => { if (e.target.value) assignGroup(g, e.target.value); } },
-      h("option", { value: "" }, "This is…"),
-      drivers.map((d) => h("option", { value: d.id }, driverName(d.id))),
-      h("option", { value: "none" }, "Other racer (hide)"));
-    const add = h("button", { class: "btn small ghost", onclick: async () => {
-      const name = prompt("Driver name for this group?");
-      if (!name) return;
-      const num = prompt("Kart number?", (g.numbers && g.numbers[0] && g.numbers[0][0]) || "");
-      const d = await api("POST", "/api/drivers", { name, number: num || "", category: "" });
-      await loadClips();
-      assignGroup(g, d.id);
-    } }, "+ New driver");
-    el.append(h("div", { class: "group" },
-      h("div", { class: "gcrops" }, g.crops.slice(0, 12).map((c) => h("div", { class: "gci" }, h("img", { src: media(c), loading: "lazy", alt: "" })))),
-      h("div", { class: "gfoot" }, h("strong", {}, `${g.tracks.length} karts · ${g.clips} clips`),
-        reads ? h("span", { class: "num" }, `reads ${reads}`) : null, h("span", { class: "spacer" }), sel, add)));
+  const gcount = {};
+  for (const c of list) gcount[c.group] = (gcount[c.group] || 0) + 1;
+  let lastG = null;
+  let singlesHeader = false;
+  list.forEach((c, i) => {
+    if (c.group !== lastG) {
+      if (gcount[c.group] >= 2) {
+        const members = list.filter((x) => x.group === c.group);
+        const reads = topReads(members);
+        const all = members.every((m) => S.kSel.has(kkey(m)));
+        grid.append(h("div", { class: "ghead" }, h("strong", {}, `${members.length} lookalikes`),
+          reads ? h("span", { class: "num" }, `reads ${reads}`) : null,
+          h("button", { class: "btn small ghost", type: "button", onclick: () => {
+            for (const m of members) { if (all) S.kSel.delete(kkey(m)); else S.kSel.add(kkey(m)); }
+            renderDesk();
+          } }, all ? "Unselect group" : `Select group (${members.length})`)));
+      } else if (!singlesHeader && lastG !== null) {
+        singlesHeader = true;
+        grid.append(h("div", { class: "ghead" }, h("strong", {}, "One-offs")));
+      }
+    }
+    lastG = c.group;
+    const tile = kartTile(c, i);
+    S.tileEls.push(tile);
+    grid.append(tile);
+  });
+}
+
+function kartTile(c, i) {
+  const k = kkey(c);
+  const st = deskStatus(c);
+  const tile = h("div", { class: `kt ${st.cls}${S.kSel.has(k) ? " sel" : ""}`, title: `${c.clip_name} · ${c.t0.toFixed(1)}s` },
+    h("div", { class: "ci" }, h("img", { src: media(c.crop), loading: "lazy", alt: "" })),
+    h("button", { class: "zoom", type: "button", title: "See the whole frame", onclick: (e) => { e.stopPropagation(); openKartBox(i); } }, "⤢"),
+    h("div", { class: "cap" }, h("span", { class: "who" }, st.label), c.number_read ? h("span", { class: "num" }, `#${c.number_read}`) : null));
+  tile.addEventListener("click", (e) => {
+    if (e.shiftKey && S.kLast !== null && S.kLast !== undefined) {
+      const [a, b] = [Math.min(S.kLast, i), Math.max(S.kLast, i)];
+      for (let j = a; j <= b; j++) { S.kSel.add(kkey(S.deskList[j])); S.tileEls[j].classList.add("sel"); }
+    } else if (S.kSel.has(k)) { S.kSel.delete(k); tile.classList.remove("sel"); }
+    else { S.kSel.add(k); tile.classList.add("sel"); }
+    S.kLast = i;
+    renderDeskBar();
+  });
+  return tile;
+}
+
+function actionButtons(n, act) {
+  const ds = deskDrivers();
+  return [
+    ...ds.map((d, i) => h("button", { class: "dk", type: "button", disabled: !n, onclick: () => act(d.id) },
+      i < 9 ? h("kbd", {}, String(i + 1)) : null, driverName(d.id))),
+    h("button", { class: "dk", type: "button", disabled: !n, onclick: () => act("__new") }, "+ New driver"),
+    h("button", { class: "dk other", type: "button", disabled: !n, onclick: () => act("none") }, h("kbd", {}, "O"), "Other racer"),
+    h("button", { class: "dk bad", type: "button", disabled: !n, onclick: () => act("notkart") }, h("kbd", {}, "X"), "Not a kart"),
+    h("button", { class: "dk", type: "button", disabled: !n, onclick: () => act(null) }, h("kbd", {}, "U"), "Automatic"),
+  ];
+}
+
+function renderDeskBar() {
+  const bar = $("#deskBar");
+  const n = S.kSel.size;
+  bar.classList.toggle("off", !n);
+  bar.replaceChildren(h("strong", {}, n ? `${n} selected →` : "Select karts, then:"),
+    ...actionButtons(n, (d) => sortKarts([...S.kSel], d)),
+    n ? h("button", { class: "link", type: "button", onclick: () => { S.kSel.clear(); renderDesk(); } }, "Clear (Esc)") : null);
+}
+
+async function sortKarts(keys, driver) {
+  if (!keys.length) return;
+  if (driver === "__new") {
+    const name = prompt("New driver's name?");
+    if (!name) return;
+    const num = prompt("Kart number (leave empty if unknown)?", "") || "";
+    const d = await api("POST", "/api/drivers", { name, number: num, category: "" });
+    await loadClips();
+    driver = d.id;
   }
-  if (!shown) el.append(h("p", { class: "hint" }, `No unnamed ${S.kartOrient} groups.`));
+  const set = new Set(keys);
+  for (const c of S.candidates) {
+    if (!set.has(kkey(c))) continue;
+    c.notkart = driver === "notkart";
+    c.other = driver === "none";
+    c.driver = driver && driver !== "none" && driver !== "notkart" ? driver : null;
+    c.source = driver === null ? "auto" : "manual";
+  }
+  S.kSel.clear();
+  renderDesk();
+  const what = driver === null ? "back to automatic" : driver === "none" ? "other racer" :
+    driver === "notkart" ? "not a kart, removed" : driverName(driver);
+  toast(`${keys.length} kart${keys.length > 1 ? "s" : ""}: ${what}. Matching the rest again…`);
+  const tracks = keys.map((k) => { const i = k.lastIndexOf("|"); return [k.slice(0, i), +k.slice(i + 1)]; });
+  await api("POST", "/api/karts/assign", { tracks, driver });
+  await loadCandidates(); await loadClips();
+  if (S.tab === "drivers") renderDrivers();
+}
+
+/* whole-frame view, one kart at a time */
+async function openKartBox(i) {
+  const c = S.deskList[i];
+  if (!c) { closeKartBox(); return; }
+  S.box = i;
+  $("#kartBox").hidden = false;
+  $("#kbTitle").textContent = `${c.clip_name} · ${c.t0.toFixed(1)} to ${c.t1.toFixed(1)}s · kart ${i + 1} of ${S.deskList.length}`;
+  $("#kbCrop").src = media(c.crop);
+  $("#kbStatus").textContent = deskStatus(c).label + (c.number_read ? ` · number read #${c.number_read}` : "");
+  $("#kbOpenClip").onclick = () => { closeKartBox(); openClip(c.clip); };
+  $("#kbActions").replaceChildren(...actionButtons(1, (d) => boxSort(d)));
+  const img = $("#kbFrame");
+  img.removeAttribute("src");
+  $("#kbFrameMsg").textContent = "Loading the whole frame…";
+  try {
+    const r = await api("GET", `/api/karts/context?clip=${encodeURIComponent(c.clip)}&track=${c.track}`);
+    if (S.box === i) { img.src = media(r.url); $("#kbFrameMsg").textContent = ""; }
+  } catch (_) { $("#kbFrameMsg").textContent = "Couldn't read that frame from the clip."; }
+}
+
+function closeKartBox() { $("#kartBox").hidden = true; S.box = null; }
+
+async function boxSort(driver) {
+  const i = S.box;
+  const c = S.deskList[i];
+  if (!c) return;
+  const k = kkey(c);
+  await sortKarts([k], driver);
+  if ($("#kartBox").hidden) return;
+  const still = S.deskList.findIndex((x) => kkey(x) === k);
+  const next = still === i ? i + 1 : i;  // it left this filter: the next kart slid into its place
+  if (next < S.deskList.length) openKartBox(next); else closeKartBox();
+}
+
+function deskKeys(e) {
+  if (S.tab !== "drivers" || ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
+  const inBox = !$("#kartBox").hidden;
+  if (inBox && e.key === "ArrowRight") { e.preventDefault(); openKartBox(Math.min(S.box + 1, S.deskList.length - 1)); return; }
+  if (inBox && e.key === "ArrowLeft") { e.preventDefault(); openKartBox(Math.max(S.box - 1, 0)); return; }
+  if (e.key === "Escape") { if (inBox) closeKartBox(); else if (S.kSel.size) { S.kSel.clear(); renderDesk(); } return; }
+  if (!inBox && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+    e.preventDefault(); for (const c of S.deskList) S.kSel.add(kkey(c)); renderDesk(); return;
+  }
+  const ds = deskDrivers();
+  let driver;
+  if (/^[1-9]$/.test(e.key) && ds[+e.key - 1]) driver = ds[+e.key - 1].id;
+  else if (e.key.toLowerCase() === "o") driver = "none";
+  else if (e.key.toLowerCase() === "x" || e.key === "Delete") driver = "notkart";
+  else if (e.key.toLowerCase() === "u") driver = null;
+  else return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (inBox) { e.preventDefault(); boxSort(driver); }
+  else if (S.kSel.size) { e.preventDefault(); sortKarts([...S.kSel], driver); }
 }
 
 function renderDrivers() {
@@ -649,66 +810,32 @@ function renderDrivers() {
   const counts = {};
   for (const list of Object.values((S.bins && S.bins.categories) || {})) for (const d of list) counts[d.id] = d.count;
   const widths = ["64px", "", "22%", "150px", "48px", "104px", "28px"];
-  tbl.append(h("tr", {}, ["#", "Name", "Category", "Refs", "Clips", "Incidents", ""].map((t, i) =>
+  tbl.append(h("tr", {}, ["#", "Name", "Category", "Sorted by you", "Clips", "Incidents", ""].map((t, i) =>
     h("th", { style: widths[i] ? `width:${widths[i]}` : null }, t))));
   const save = async (d, patch) => { await api("POST", "/api/drivers", { id: d.id, ...patch }); await loadClips(); };
-  const sorted = S.drivers.slice().sort((a, b) => (a.category || "").localeCompare(b.category || "") || (+a.number || 0) - (+b.number || 0));
-  for (const d of sorted) {
+  for (const d of deskDrivers()) {
+    const taught = S.candidates.filter((c) => c.driver === d.id && c.source === "manual");
     const refs = h("div", { class: "refs" });
-    const refList = d.refs || [];
-    for (const r of refList.slice(0, 3)) {
-      const c = S.candidates.find((x) => x.clip === r.clip && x.track === r.track);
-      if (c) refs.append(h("img", { src: media(c.crop), alt: "", title: c.clip_name }));
-    }
-    if (refList.length > 3) refs.append(h("span", { class: "more" }, `+${refList.length - 3}`));
-    if (!(d.refs || []).length) refs.append(h("span", { class: "hint" }, "none"));
+    for (const c of taught.slice(0, 3)) refs.append(h("img", { src: media(c.crop), alt: "", title: c.clip_name }));
+    if (taught.length > 3) refs.append(h("span", { class: "more" }, `+${taught.length - 3}`));
+    if (!taught.length) refs.append(h("span", { class: "hint" }, "none yet"));
     const inc = h("select", { onclick: (e) => e.stopPropagation(), onchange: (e) => save(d, { include_incidents: e.target.value === "" ? null : e.target.value === "1" }) },
       h("option", { value: "" }, "Default"), h("option", { value: "1", selected: d.include_incidents === true }, "Include"),
       h("option", { value: "0", selected: d.include_incidents === false }, "Leave out"));
     const ph = { number: "No.", name: "Name", category: "Class" };
     const inp = (k, cls = "") => h("input", { class: cls, value: d[k] || "", placeholder: ph[k], onclick: (e) => e.stopPropagation(), onchange: (e) => save(d, { [k]: e.target.value }) });
-    tbl.append(h("tr", { class: `clickable${S.selDriver === d.id ? " sel" : ""}`, onclick: () => { S.selDriver = d.id; renderDrivers(); } },
+    tbl.append(h("tr", { class: `clickable${S.deskDriver === d.id ? " sel" : ""}`, title: "Show this driver's karts on the right",
+      onclick: () => { S.deskDriver = S.deskDriver === d.id ? null : d.id; S.deskFilter = "all"; S.kSel.clear(); renderDrivers(); } },
       h("td", { class: "n" }, inp("number", "n")), h("td", {}, inp("name")), h("td", {}, inp("category")),
       h("td", {}, refs), h("td", {}, counts[d.id] ?? 0), h("td", {}, inc),
       h("td", {}, h("button", { class: "link danger", title: "Delete driver", onclick: async (e) => {
         e.stopPropagation(); if (!confirm(`Delete ${d.name}?`)) return;
-        await api("DELETE", `/api/drivers/${d.id}`); await loadClips(); renderDrivers();
+        if (S.deskDriver === d.id) S.deskDriver = null;
+        await api("DELETE", `/api/drivers/${d.id}`); await loadClips(); await loadCandidates(); renderDrivers();
       } }, "✕"))));
   }
-  if (!S.drivers.length) tbl.append(h("tr", {}, h("td", { colspan: 7, class: "hint" }, "No drivers yet. Paste the entry list above.")));
-
-  const sel = S.drivers.find((x) => x.id === S.selDriver);
-  const groupsView = S.kartView === "groups";
-  $$("#kartView button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.kartView));
-  $("#candUnassigned").parentElement.hidden = groupsView;
-  $("#groupList").hidden = !groupsView;
-  $("#candidates").hidden = groupsView;
-  $("#refFor").textContent = groupsView ? `${S.groups.length} unnamed groups`
-    : (sel ? `references for ${driverName(sel.id)}` : "(select a driver)");
-  $("#kartHint").textContent = groupsView
-    ? "Karts that look alike (helmet, suit and kart colours) are grouped. Name a group once and every clip in it is sorted, then KartCut re-matches the rest. Pick Other racer for competitors you don't need. Kart numbers in the table help too."
-    : "Select a driver on the left, then click 1 to 3 clear shots of their kart as references.";
-  for (const id of ["#candidates", "#groupList"]) {
-    $(id).style.setProperty("--cw", `${S.cropSize}px`);
-    $(id).classList.toggle("helmet", !!S.helmet);
-  }
-  if (groupsView) { renderGroups(); return; }
-  const grid = $("#candidates");
-  grid.replaceChildren();
-  const only = $("#candUnassigned").checked;
-  const base = S.candidates.filter((c) => !only || (!c.driver && !c.other));
-  setKartOrientCounts(base.map((c) => c.orientation || "horizontal"));
-  const list = base.filter((c) => orientOk(c.orientation || "horizontal"));
-  if (!list.length) grid.append(h("p", { class: "hint" }, "Kart shots appear here after analysis."));
-  for (const c of list) {
-    const isRef = sel && (sel.refs || []).some((r) => r.clip === c.clip && r.track === c.track);
-    const cap = `${c.number_read ? "#" + c.number_read + " read · " : ""}${c.driver ? driverName(c.driver) : "?"}`;
-    grid.append(h("div", { class: `crop${isRef ? " ref" : ""}`, title: `${c.clip_name}\n${cap}`, onclick: async () => {
-      if (!sel) { toast("Select a driver in the table first"); return; }
-      await api("POST", `/api/drivers/${sel.id}/ref`, { clip: c.clip, track: c.track, add: !isRef });
-      await loadClips(); await loadCandidates(); renderDrivers();
-    } }, h("div", { class: "ci" }, h("img", { src: media(c.crop), loading: "lazy", alt: "" })), h("div", { class: "cap" }, cap)));
-  }
+  if (!S.drivers.length) tbl.append(h("tr", {}, h("td", { colspan: 7, class: "hint" }, "No drivers yet. Paste the entry list above, or use + New driver while sorting.")));
+  renderDesk();
 }
 
 /* ------------------------------------------------------------------ colour */
@@ -914,17 +1041,18 @@ function wire() {
   };
   $("#driverAdd").onclick = async () => {
     const d = await api("POST", "/api/drivers", { number: "", name: "New driver", category: "" });
-    S.selDriver = d.id; await loadClips(); renderDrivers();
+    await loadClips(); renderDrivers();
   };
-  $("#candUnassigned").onchange = renderDrivers;
+  $("#deskDriver").onchange = (e) => { S.deskDriver = e.target.value || null; if (S.deskDriver) S.deskFilter = "all"; S.kSel.clear(); renderDrivers(); };
+  $("#kbClose").onclick = closeKartBox;
+  document.addEventListener("keydown", deskKeys);
   $("#cropSize").value = S.cropSize;
-  $("#cropSize").oninput = (e) => { S.cropSize = +e.target.value; setPref("cropSize", S.cropSize); renderDrivers(); };
-  $$("#kartOrient button").forEach((b) => (b.onclick = () => { S.kartOrient = b.dataset.v; setPref("kartOrient", S.kartOrient); renderDrivers(); }));
+  $("#cropSize").oninput = (e) => { S.cropSize = +e.target.value; setPref("cropSize", S.cropSize); $("#desk").style.setProperty("--cw", `${S.cropSize}px`); };
+  $$("#kartOrient button").forEach((b) => (b.onclick = () => { S.kartOrient = b.dataset.v; setPref("kartOrient", S.kartOrient); S.kSel.clear(); renderDesk(); }));
   $("#helmetMode").checked = !!S.helmet;
-  $("#helmetMode").onchange = (e) => { S.helmet = e.target.checked; setPref("helmet", S.helmet); renderDrivers(); };
+  $("#helmetMode").onchange = (e) => { S.helmet = e.target.checked; setPref("helmet", S.helmet); $("#desk").classList.toggle("helmet", S.helmet); };
   $("#cardSize").value = S.cardSize;
   $("#cardSize").oninput = (e) => { S.cardSize = +e.target.value; setPref("cardSize", S.cardSize); $("#clipGrid").style.setProperty("--card", `${S.cardSize}px`); };
-  $$("#kartView button").forEach((b) => (b.onclick = () => { S.kartView = b.dataset.v; renderDrivers(); }));
   $("#rematchBtn").onclick = async () => { await api("POST", "/api/rematch", {}); toast("Re-matching karts"); };
 
   // clips
