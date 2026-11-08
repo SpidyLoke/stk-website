@@ -29,7 +29,7 @@ function setPref(key, v) {
 }
 
 const S = {
-  sel: new Set(), orient: pref("orient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
+  sel: new Set(), orient: pref("orient", "all"), kartOrient: pref("kartOrient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
   candidates: [], groups: [], groupStats: {}, kartView: "groups", exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
@@ -593,6 +593,17 @@ async function assignGroup(g, driver) {
   toast(driver === "none" ? "Hidden as other racer" : `Named ${driverName(driver)}. The rest were re-matched.`);
 }
 
+const orientOk = (o) => S.kartOrient === "all" || (S.kartOrient === "vertical" ? o === "vertical" : o !== "vertical");
+
+function setKartOrientCounts(items) {
+  const nV = items.filter((o) => o === "vertical").length;
+  const counts = { all: items.length, horizontal: items.length - nV, vertical: nV };
+  $$("#kartOrient button").forEach((btn) => {
+    btn.classList.toggle("on", btn.dataset.v === S.kartOrient);
+    btn.textContent = `${{ all: "All", horizontal: "Horizontal", vertical: "Vertical" }[btn.dataset.v]} ${counts[btn.dataset.v]}`;
+  });
+}
+
 function renderGroups() {
   const el = $("#groupList");
   el.replaceChildren();
@@ -603,7 +614,14 @@ function renderGroups() {
     return;
   }
   const drivers = S.drivers.slice().sort((a, b) => (+a.number || 0) - (+b.number || 0));
-  for (const g of S.groups) {
+  setKartOrientCounts(S.groups.flatMap((g) => g.orients || g.tracks.map(() => "horizontal")));
+  let shown = 0;
+  for (const g0 of S.groups) {
+    const keep = g0.tracks.map((_, i) => orientOk((g0.orients || [])[i] || "horizontal"));
+    if (!keep.some(Boolean)) continue;
+    const g = { ...g0, tracks: g0.tracks.filter((_, i) => keep[i]), crops: g0.crops.filter((_, i) => keep[i]) };
+    g.clips = new Set(g.tracks.map((t) => t[0])).size;
+    shown += 1;
     const reads = (g.numbers || []).filter((n) => n[1] >= 0.5).map((n) => `#${n[0]}`).join(" / ");
     const sel = h("select", { onchange: (e) => { if (e.target.value) assignGroup(g, e.target.value); } },
       h("option", { value: "" }, "This is…"),
@@ -622,6 +640,7 @@ function renderGroups() {
       h("div", { class: "gfoot" }, h("strong", {}, `${g.tracks.length} karts · ${g.clips} clips`),
         reads ? h("span", { class: "num" }, `reads ${reads}`) : null, h("span", { class: "spacer" }), sel, add)));
   }
+  if (!shown) el.append(h("p", { class: "hint" }, `No unnamed ${S.kartOrient} groups.`));
 }
 
 function renderDrivers() {
@@ -677,7 +696,9 @@ function renderDrivers() {
   const grid = $("#candidates");
   grid.replaceChildren();
   const only = $("#candUnassigned").checked;
-  const list = S.candidates.filter((c) => !only || (!c.driver && !c.other));
+  const base = S.candidates.filter((c) => !only || (!c.driver && !c.other));
+  setKartOrientCounts(base.map((c) => c.orientation || "horizontal"));
+  const list = base.filter((c) => orientOk(c.orientation || "horizontal"));
   if (!list.length) grid.append(h("p", { class: "hint" }, "Kart shots appear here after analysis."));
   for (const c of list) {
     const isRef = sel && (sel.refs || []).some((r) => r.clip === c.clip && r.track === c.track);
@@ -898,6 +919,7 @@ function wire() {
   $("#candUnassigned").onchange = renderDrivers;
   $("#cropSize").value = S.cropSize;
   $("#cropSize").oninput = (e) => { S.cropSize = +e.target.value; setPref("cropSize", S.cropSize); renderDrivers(); };
+  $$("#kartOrient button").forEach((b) => (b.onclick = () => { S.kartOrient = b.dataset.v; setPref("kartOrient", S.kartOrient); renderDrivers(); }));
   $("#helmetMode").checked = !!S.helmet;
   $("#helmetMode").onchange = (e) => { S.helmet = e.target.checked; setPref("helmet", S.helmet); renderDrivers(); };
   $("#cardSize").value = S.cardSize;

@@ -446,6 +446,7 @@ def driver_candidates():
                 continue
             t = tmap.get(str(tr["id"]), {})
             out.append({"clip": cid, "clip_name": p.data["clips"][cid]["name"], "track": tr["id"], "crop": tr["crop"],
+                        "orientation": an.get("orientation", "horizontal"),
                         "driver": t.get("driver"), "number_read": t.get("number_read"), "other": t.get("other", False),
                         "source": t.get("source"), "share": t.get("share", 0), "frames": len(tr["frames"])})
     out.sort(key=lambda x: (-(x["share"] or 0) * x["frames"]))
@@ -470,10 +471,18 @@ def rematch(body: dict = Body(default={})):
     return S.jobs.submit("rematch", "Re-match karts", fn).view()
 
 
+def _groups_payload(p: Project) -> dict:
+    """Groups plus the orientation of each member's clip, for the Horizontal / Vertical toggle."""
+    orient = {cid: (p.load_analysis(cid) or {}).get("orientation", "horizontal") for cid in p.derived.get("clips", {})}
+    out = []
+    for g in p.derived.get("groups", []):
+        out.append({**g, "orients": [orient.get(cid, "horizontal") for cid, _ in g["tracks"]]})
+    return {"groups": out, "stats": p.derived.get("id_stats", {})}
+
+
 @app.get("/api/groups")
 def groups():
-    p = proj()
-    return {"groups": p.derived.get("groups", []), "stats": p.derived.get("id_stats", {})}
+    return _groups_payload(proj())
 
 
 @app.post("/api/groups/assign")
@@ -488,7 +497,7 @@ def groups_assign(body: dict = Body(...)):
             p.data["track_overrides"].setdefault(cid, {})[str(int(tid))] = did
         p.save()
     p.finalise()
-    return {"groups": p.derived.get("groups", []), "stats": p.derived.get("id_stats", {})}
+    return _groups_payload(p)
 
 
 # ---------------------------------------------------------------------- colour

@@ -268,7 +268,7 @@ def _groups(tracks, S, results, T, settings) -> list[dict]:
         members.sort(key=lambda k: -len(tracks[k].get("frames", [])))
         out.append({
             "tracks": [[tracks[k]["_cid"], tracks[k]["_tid"]] for k in members],
-            "crops": [tracks[k]["crop"] for k in members[:10]],
+            "crops": [tracks[k]["crop"] for k in members],
             "clips": len({tracks[k]["_cid"] for k in members}),
             "numbers": [[num, round(v, 2)] for num, v in top],
         })
