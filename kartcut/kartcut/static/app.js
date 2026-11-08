@@ -29,7 +29,7 @@ function setPref(key, v) {
 }
 
 const S = {
-  sel: new Set(), orient: pref("orient", "all"), kartOrient: pref("kartOrient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
+  showBg: pref("showBg", false), sel: new Set(), orient: pref("orient", "all"), kartOrient: pref("kartOrient", "all"), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
   candidates: [], deskFilter: "tosort", deskDriver: null, kSel: new Set(), kLast: null, deskList: [], tileEls: [], box: null, exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
@@ -626,7 +626,10 @@ function renderDesk() {
   const desk = $("#desk");
   desk.style.setProperty("--cw", `${S.cropSize}px`);
   desk.classList.toggle("helmet", !!S.helmet);
-  const drvOk = (c) => !S.deskDriver || c.driver === S.deskDriver;
+  const bgOk = (c) => S.showBg || !c.background || c.source === "manual";
+  const drvOk = (c) => (!S.deskDriver || c.driver === S.deskDriver) && bgOk(c);
+  const nBg = S.candidates.filter((c) => c.background && c.source !== "manual" && !c.notkart).length;
+  $("#showBgLabel").textContent = `Background karts (${nBg})`;
   const fbar = $("#deskFilters");
   fbar.replaceChildren();
   for (const [k, label, fn] of DESK_FILTERS) {
@@ -642,7 +645,7 @@ function renderDesk() {
   const dsel = $("#deskDriver");
   dsel.replaceChildren(h("option", { value: "" }, "Any driver"),
     ...deskDrivers().map((d) => h("option", { value: d.id, selected: S.deskDriver === d.id }, driverName(d.id))));
-  const left = S.candidates.filter((c) => DESK_FILTERS[0][2](c)).length;
+  const left = S.candidates.filter((c) => DESK_FILTERS[0][2](c) && bgOk(c)).length;
   $("#deskInfo").textContent = `${left} still to sort · ${S.candidates.filter((c) => !c.notkart).length} karts`;
   renderDeskBar();
   const grid = $("#deskGrid");
@@ -715,7 +718,13 @@ function renderDeskBar() {
   const bar = $("#deskBar");
   const n = S.kSel.size;
   bar.classList.toggle("off", !n);
-  bar.replaceChildren(h("strong", {}, n ? `${n} selected →` : "Select karts, then:"),
+  const total = S.deskList.length;
+  const allOn = total > 0 && S.deskList.every((c) => S.kSel.has(kkey(c)));
+  bar.replaceChildren(
+    h("button", { class: "dk", type: "button", disabled: !total, title: "Ctrl+A",
+      onclick: () => { if (allOn) S.kSel.clear(); else for (const c of S.deskList) S.kSel.add(kkey(c)); renderDesk(); } },
+      allOn ? "Unselect all" : `Select all ${total}`),
+    h("strong", {}, n ? `${n} selected →` : "then:"),
     ...actionButtons(n, (d) => sortKarts([...S.kSel], d)),
     n ? h("button", { class: "link", type: "button", onclick: () => { S.kSel.clear(); renderDesk(); } }, "Clear (Esc)") : null);
 }
@@ -1045,6 +1054,8 @@ function wire() {
   };
   $("#deskDriver").onchange = (e) => { S.deskDriver = e.target.value || null; if (S.deskDriver) S.deskFilter = "all"; S.kSel.clear(); renderDrivers(); };
   $("#kbClose").onclick = closeKartBox;
+  $("#showBg").checked = !!S.showBg;
+  $("#showBg").onchange = (e) => { S.showBg = e.target.checked; setPref("showBg", S.showBg); S.kSel.clear(); renderDesk(); };
   document.addEventListener("keydown", deskKeys);
   $("#cropSize").value = S.cropSize;
   $("#cropSize").oninput = (e) => { S.cropSize = +e.target.value; setPref("cropSize", S.cropSize); $("#desk").style.setProperty("--cw", `${S.cropSize}px`); };

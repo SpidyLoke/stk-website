@@ -446,18 +446,25 @@ def driver_candidates():
         an = p.load_analysis(cid) or {}
         tmap = info.get("identity", {}).get("tracks", {})
         ovr = p.data["track_overrides"].get(cid, {})
+        H = float(an.get("analysis_h") or 720)
+        main_tid = max(tmap, key=lambda k: tmap[k].get("share", 0)) if tmap else None
         for tr in an.get("tracks", []):
             if not tr.get("crop"):
                 continue
             t = tmap.get(str(tr["id"]), {})
             notkart = ovr.get(str(tr["id"])) == "notkart"
+            max_h = max((f[4] - f[2]) for f in tr["frames"]) / H
+            share = float(t.get("share", 0))
+            # small karts in the back don't decide whose clip it is: hidden on the desk by default
+            background = not (str(tr["id"]) == main_tid or share >= 0.15 or max_h >= 0.15)
             gid = groups.get(f"{cid}|{tr['id']}", -1)
             out.append({"clip": cid, "clip_name": p.data["clips"][cid]["name"], "track": tr["id"], "crop": tr["crop"],
                         "orientation": an.get("orientation", "horizontal"), "driver": None if notkart else t.get("driver"),
                         "number_read": t.get("number_read"), "other": bool(t.get("other")) and not notkart,
                         "notkart": notkart, "source": "manual" if notkart else t.get("source"),
                         "prob": t.get("prob", 0), "group": gid, "group_size": sizes.get(gid, 1),
-                        "t0": tr["frames"][0][0], "t1": tr["frames"][-1][0], "frames": len(tr["frames"])})
+                        "t0": tr["frames"][0][0], "t1": tr["frames"][-1][0], "frames": len(tr["frames"]),
+                        "background": background, "size": round(max_h, 3)})
     out.sort(key=lambda x: (-x["group_size"], x["group"], -x["frames"]))
     return out
 

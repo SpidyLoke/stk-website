@@ -35,8 +35,9 @@ Update your NVIDIA driver first if it is old; the installer picks the PyTorch bu
 2. **Ingest**: add each card, pick Drive A and Drive B, start offload. Format cards only after the green "safe to format" banner. The Drive A copy is added to the project automatically.
 3. **Analyse new clips**. You can keep shooting; add new folders and analyse again later, finished clips are not redone.
 4. **Drivers**: paste the entry list (number, name, category per line), or skip it and create drivers while sorting. Fill in kart numbers if you know them. On the right, **Sort karts** shows every kart KartCut found, lookalikes grouped together:
-   - Click karts to select them (Shift-click for a range, **Select group** for a whole lookalike group), then click a driver or press its number key. **O** = other racer, **X** = not a kart (a wrong detection, removed everywhere), **U** = back to automatic.
-   - **⤢** on a kart shows the whole frame with the kart boxed. In there, number keys sort it and jump to the next one, and the arrow keys step through.
+   - Click karts to select them (Shift-click for a range, **Select group** for a whole lookalike group, **Select all** for everything showing), then click a driver or press its number key. **O** = other racer, **X** = not a kart (a wrong detection, removed everywhere), **U** = back to automatic.
+   - Small karts in the back of a shot are hidden by default (they don't decide whose clip it is); tick **Background karts** to see them.
+   - **⤢** on a kart shows the whole frame: the kart you're sorting in yellow, every other kart KartCut found in that frame in white. In there, number keys sort it and jump to the next one, and the arrow keys step through.
    - Filters: *To sort*, *Auto-matched* (check KartCut's guesses), *Sorted by you*, *Other racers*, *Not karts*. Click a driver in the table to see only their karts and fix wrong ones.
    - After each sort KartCut matches the remaining karts again from what you've taught it.
    Set incidents to *Leave out* for anyone who shouldn't have their crash in a reel.

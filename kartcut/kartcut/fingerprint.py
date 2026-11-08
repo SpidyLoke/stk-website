@@ -149,7 +149,7 @@ def context_image(project, cid: str, tid: int) -> str | None:
     from . import colour as C
     from . import media
 
-    rel = f"cache/context/{cid}_{tid}.jpg"
+    rel = f"cache/context/{cid}_{tid}_v2.jpg"
     out = Path(project.root) / rel
     if out.exists():
         return rel
@@ -173,9 +173,26 @@ def context_image(project, cid: str, tid: int) -> str | None:
         return None
     img = C.display_bgr_u8(frame, C.get_profile(an.get("profile")))
     k = rd.w / float(an.get("analysis_w") or 1280)
+    # every other kart KartCut found in this same frame, thin white, so a missed kart is obvious
+    for o in an.get("tracks", []):
+        if int(o["id"]) == int(tid):
+            continue
+        f = next((f for f in o["frames"] if abs(f[0] - best[0]) < 1e-3), None)
+        if f is None:
+            continue
+        a1, b1, a2, b2 = [int(round(v * k)) for v in f[1:5]]
+        cv2.rectangle(img, (a1, b1), (a2, b2), (0, 0, 0), 4)
+        cv2.rectangle(img, (a1, b1), (a2, b2), (235, 235, 235), 2)
     x1, y1, x2, y2 = [int(round(v * k)) for v in best[1:5]]
-    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), 6)
-    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 180, 246), 3)
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), 7)
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 180, 246), 4)
+    label = "THIS KART"
+    fs = max(0.5, img.shape[1] / 1600)
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, fs, 2)
+    ly = y1 - 8 if y1 - th - 14 > 0 else min(img.shape[0] - 4, y2 + th + 12)
+    lx = max(0, min(x1, img.shape[1] - tw - 10))
+    cv2.rectangle(img, (lx, ly - th - 8), (lx + tw + 10, ly + 4), (0, 180, 246), -1)
+    cv2.putText(img, label, (lx + 5, ly), cv2.FONT_HERSHEY_DUPLEX, fs, (10, 10, 10), 2, cv2.LINE_AA)
     out.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out), img, [cv2.IMWRITE_JPEG_QUALITY, 88])
     return rel

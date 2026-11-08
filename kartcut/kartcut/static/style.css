@@ -286,11 +286,16 @@ kbd { font: 600 10.5px var(--font); background: var(--bg); border: 1px solid var
 .kt.st-notkart .who { color: var(--bad); }
 .ghead { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
 .ghead .num { color: var(--accent); font-weight: 600; }
-.kbox { width: min(1400px, 96vw); max-height: 94vh; overflow: auto; }
-.kb-body { display: grid; grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr); gap: 12px; margin-bottom: 10px; }
-.kb-frame { background: #000; border-radius: 8px; display: grid; place-items: center; min-height: 320px; position: relative; }
-.kb-frame img { max-width: 100%; max-height: 68vh; display: block; }
+.kbox { width: min(1500px, 96vw); height: 94vh; max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; }
+.kbox .modal-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+  grid-template-rows: minmax(0, 1fr); gap: 12px; margin-bottom: 10px; }
+.kb-frame { background: #000; border-radius: 8px; display: flex; align-items: center; justify-content: center; min-height: 0; height: 100%; position: relative; overflow: hidden; }
+.kb-frame img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
 .kb-frame .hint { position: absolute; }
-.kb-side img { width: 100%; border-radius: 8px; background: #000; }
+.kb-side { min-height: 0; overflow: auto; }
+.kb-side img { width: 100%; max-height: 40vh; object-fit: contain; border-radius: 8px; background: #000; }
+.kbox .deskbar { flex: none; }
+.kbox > .hint { flex: none; margin: 6px 0 0; }
 .kb-status { margin: 8px 0; font-weight: 600; }
-@media (max-width: 900px) { .kb-body { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .kb-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } }

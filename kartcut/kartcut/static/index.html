@@ -83,6 +83,7 @@
           <select id="deskDriver" class="plain"></select>
           <div class="seg" id="kartOrient"><button type="button" data-v="all" class="on">All</button><button type="button" data-v="horizontal">Horizontal</button><button type="button" data-v="vertical">Vertical</button></div>
           <label class="check"><input type="checkbox" id="helmetMode"> Helmet close-up</label>
+          <label class="check" title="Small karts in the back of a shot. They don't decide whose clip it is."><input type="checkbox" id="showBg"> <span id="showBgLabel">Background karts</span></label>
           <label class="check slim">Size <input type="range" id="cropSize" min="90" max="340" step="10"></label>
           <span class="spacer"></span>
           <button class="btn small" id="rematchBtn" type="button" title="Sharper previews + match everything again">Re-match karts</button>
@@ -196,6 +197,7 @@
     <div class="kb-body">
       <div class="kb-frame"><img id="kbFrame" alt=""><span id="kbFrameMsg" class="hint"></span></div>
       <div class="kb-side"><img id="kbCrop" alt=""><div id="kbStatus" class="kb-status"></div>
+        <p class="hint">Yellow box = the kart you're sorting. White boxes = other karts KartCut found in this frame. A kart with no box wasn't detected in this frame.</p>
         <button class="btn small ghost" id="kbOpenClip" type="button">Open this clip</button></div>
     </div>
     <div class="deskbar" id="kbActions"></div>
