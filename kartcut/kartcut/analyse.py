@@ -216,8 +216,10 @@ def analyse_clip(clip: dict, project_dir: Path, settings: dict, models: Models,
         crop_rel = None
         if cands:
             c = cands[0]
-            scale = 160.0 / max(1, c.shape[0])
-            cimg = cv2.resize(c, (max(1, int(c.shape[1] * scale)), 160), interpolation=cv2.INTER_AREA)
+            th = int(max(160, min(360, c.shape[0])))  # never smaller than 160, up to 360 px tall
+            scale = th / max(1, c.shape[0])
+            cimg = cv2.resize(c, (max(1, int(c.shape[1] * scale)), th),
+                              interpolation=cv2.INTER_AREA if scale <= 1 else cv2.INTER_CUBIC)
             crop_rel = f"cache/crops/{cid}_{tid}.jpg"
             cv2.imwrite(str(Path(project_dir) / crop_rel), cimg, [cv2.IMWRITE_JPEG_QUALITY, 85])
         track_out.append({

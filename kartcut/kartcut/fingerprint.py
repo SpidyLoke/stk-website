@@ -67,6 +67,83 @@ def fp2_from_crop(crop_bgr: np.ndarray) -> np.ndarray | None:
     return (np.concatenate(out) / 2.0).astype(np.float32)
 
 
+HD_LONG_SIDE = 1920
+HD_MIN_H = 300
+
+
+def hd_crops(project, progress=None, cancelled=None) -> int:
+    """Re-cut low-resolution kart previews from the original footage at up to 1920 px,
+    so helmets and suits are readable. Fingerprints for those karts are then redone."""
+    from . import colour as C
+    from . import media
+    from .metrics import crop as crop_box
+
+    ans = project.all_analyses()
+    done = 0
+    items = list(ans.items())
+    for i, (cid, an) in enumerate(items):
+        if cancelled and cancelled():
+            break
+        if progress:
+            progress(i / max(1, len(items)), f"Sharper kart previews ({i + 1}/{len(items)})")
+        todo = []
+        for tr in an.get("tracks", []):
+            if not tr.get("crop") or tr.get("crop_hd"):
+                continue
+            img = cv2.imread(str(Path(project.root) / tr["crop"]))
+            if img is not None and img.shape[0] >= HD_MIN_H:
+                tr["crop_hd"] = True
+                continue
+            todo.append(tr)
+        if not todo:
+            continue
+        path = Path(an["path"])
+        if not path.exists():
+            continue
+        try:
+            pr = media.probe(path)
+        except Exception as e:
+            log.warning("HD previews skipped for %s: %s", path.name, e)
+            continue
+        prof = C.get_profile(an.get("profile"))
+        aw = float(an.get("analysis_w") or 1280)
+        changed = False
+        for tr in todo:
+            # same pick as analysis: biggest, sharpest, most confident frame
+            best = max(tr["frames"], key=lambda f: (f[3] - f[1]) * (f[4] - f[2]) * (0.3 + f[6]) * f[5])
+            try:
+                rd = media.FrameReader(path, pr, long_side=HD_LONG_SIDE, start=max(0.0, best[0]), duration=0.4,
+                                       transpose=int(an.get("transpose") or 0))
+                frame = None
+                for _, _, fr in rd:
+                    frame = fr.copy()
+                    break
+                rd.close()
+            except Exception as e:
+                log.warning("HD preview failed for %s: %s", path.name, e)
+                continue
+            if frame is None:
+                continue
+            k = rd.w / aw
+            box = np.array(best[1:5], np.float32) * k
+            c = crop_box(frame, box, pad=0.06)
+            if c.size == 0:
+                continue
+            c = C.display_bgr_u8(c, prof)
+            th = int(max(160, min(360, c.shape[0])))
+            s = th / c.shape[0]
+            c = cv2.resize(c, (max(1, int(c.shape[1] * s)), th), interpolation=cv2.INTER_AREA if s <= 1 else cv2.INTER_CUBIC)
+            cv2.imwrite(str(Path(project.root) / tr["crop"]), c, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            tr["crop_hd"] = True
+            tr.pop("fp_v", None)      # recompute fingerprints from the sharper crop
+            tr.pop("emb_top", None)
+            changed = True
+            done += 1
+        if changed:
+            project.save_analysis(cid, an)
+    return done
+
+
 def refresh(project, models=None, progress=None, force: bool = False) -> int:
     """Add fp2 (+ CLIP embeddings when available) to every track that lacks them."""
     embedder = None

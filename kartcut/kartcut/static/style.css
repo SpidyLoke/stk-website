@@ -61,9 +61,9 @@ h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spa
 main { padding: 16px; max-width: 1800px; margin: 0 auto; }
 .tab { display: none; }
 .tab.on { display: block; }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
-.cols.wide-left { grid-template-columns: minmax(420px, 1.1fr) 1fr; }
-.cols.wide-right { grid-template-columns: minmax(340px, 420px) 1fr; }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.cols.wide-left { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
+.cols.wide-right { grid-template-columns: minmax(340px, 420px) minmax(0, 1fr); }
 @media (max-width: 1000px) { .cols, .cols.wide-left, .cols.wide-right { grid-template-columns: 1fr; } }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
 label { display: block; font-size: 12.5px; color: var(--muted); margin: 10px 0; }
@@ -122,9 +122,13 @@ output { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
 .mini { height: 36px; border-radius: 4px; display: block; }
 
 /* crops */
-.crops { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; max-height: 70vh; overflow: auto; }
+.crops { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cw, 120px), 1fr)); gap: 8px; max-height: 72vh; overflow: auto; }
 .crop { position: relative; background: var(--panel2); border: 2px solid transparent; border-radius: var(--r); overflow: hidden; cursor: pointer; }
-.crop img { width: 100%; height: 100px; object-fit: cover; display: block; }
+.ci, .gci { position: relative; overflow: hidden; background: #000; }
+.ci { height: calc(var(--cw, 120px) * 0.82); }
+.ci img, .gci img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.gci { height: calc(var(--cw, 120px) * 0.82); aspect-ratio: 1.25; flex: none; border-radius: 6px; }
+.helmet .ci img, .helmet .gci img { object-fit: cover; object-position: 50% 0; transform: scale(1.5); transform-origin: 50% 6%; }
 .crop .cap { font-size: 11px; padding: 4px 6px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crop.ref { border-color: var(--accent); }
 .crop.ref::after { content: "REF"; position: absolute; top: 4px; right: 4px; background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
@@ -142,7 +146,7 @@ output { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
 .toolbar input { max-width: 260px; margin: 0; }
 .toolbar select { max-width: 220px; margin: 0; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 230px), 1fr)); gap: 12px; }
 .clip { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; transition: border-color .15s; }
 .clip:hover { border-color: var(--muted); }
 .thumb { position: relative; aspect-ratio: 16/9; background: #000; }
@@ -227,8 +231,28 @@ output { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
 .seg button.on { background: var(--raise); color: var(--text); }
 .group { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin: 8px 0; }
 .gcrops { display: flex; gap: 4px; overflow-x: auto; }
-.gcrops img { height: 72px; border-radius: 6px; flex: none; }
 .gfoot { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; font-size: 12.5px; }
 .gfoot select { background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .gfoot .num { color: var(--accent); font-weight: 600; }
 #groupList { max-height: 70vh; overflow: auto; }
+
+/* driver table: fixed columns so long reference rows can't push it under the next panel */
+#driverTable { table-layout: fixed; }
+#driverTable td { overflow: hidden; }
+.refs { flex-wrap: nowrap; align-items: center; overflow: hidden; }
+.refs .more { font-size: 11px; color: var(--muted); white-space: nowrap; }
+label.slim { gap: 6px; color: var(--muted); font-size: 12.5px; margin: 0; }
+label.slim input[type=range] { width: 110px; }
+
+/* moving clips between drivers */
+.clip { position: relative; }
+.clip.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.clip .pick { position: absolute; top: 6px; right: 6px; width: 18px; height: 18px; accent-color: var(--accent); z-index: 2; cursor: pointer; }
+.clip.dragging { opacity: .5; }
+.bin.drop { background: #2a240d; outline: 1px dashed var(--accent); }
+.bulk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #2a240d; border: 1px solid #5a4a14; border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; font-size: 13px; }
+.bulk select, .dmove select { background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.dmove { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0 4px; }
+.dchip { display: inline-flex; gap: 6px; align-items: center; background: #2a240d; border: 1px solid #5a4a14; color: var(--accent); border-radius: 999px; padding: 3px 4px 3px 10px; font-weight: 600; font-size: 12.5px; }
+.dchip button { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 6px; font-size: 13px; }
+.dchip button:hover { color: var(--bad); }

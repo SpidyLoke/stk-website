@@ -41,6 +41,8 @@ def _place(src: Path, dst: Path, method: str) -> str:
 def sort_on_disk(project, dest: Path, method: str = "link", include_junk: bool = False, progress=None) -> dict:
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
+    previous = _read_index(dest)
+    prev_res = {(r.get("folder"), r.get("clip")): r.get("result") for r in previous}
     summ = [c for c in project.clip_summaries() if c["status"] == "analysed"]
     rows = []
     failed_links = 0
@@ -66,13 +68,63 @@ def sort_on_disk(project, dest: Path, method: str = "link", include_junk: bool =
                 if res == "link-failed":
                     failed_links += 1
                 if f == src:
-                    rows.append({"clip": c["name"], "folder": str(t.relative_to(dest)), "result": res,
-                                 "source": str(src)})
+                    rel = str(t.relative_to(dest))
+                    if res == "exists" and prev_res.get((rel, c["name"])) in ("linked", "copied"):
+                        res = prev_res[(rel, c["name"])]  # ours from an earlier sort, still ours
+                    rows.append({"clip": c["name"], "folder": rel, "result": res, "source": str(src)})
         if failed_links and method == "link" and failed_links >= 3 and not any(r["result"] == "linked" for r in rows):
             raise RuntimeError("This drive can't hold hard links (exFAT/FAT drives can't). "
                                "Pick a folder on the same NTFS drive as the footage, or choose Copy.")
+    removed = _remove_stale(dest, previous, rows)
     with open(dest / "_KartCut_index.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["clip", "folder", "result", "source"])
         w.writeheader()
         w.writerows(rows)
-    return {"placed": len(rows), "failed_links": failed_links, "folder": str(dest)}
+    return {"placed": len(rows), "failed_links": failed_links, "folder": str(dest), "moved_out": removed}
+
+
+def _read_index(dest: Path) -> list[dict]:
+    f = dest / "_KartCut_index.csv"
+    if not f.exists():
+        return []
+    try:
+        with open(f, newline="", encoding="utf-8-sig") as fh:
+            return list(csv.DictReader(fh))
+    except (OSError, csv.Error):
+        return []
+
+
+def _remove_stale(dest: Path, previous: list[dict], rows: list[dict]) -> int:
+    """A clip moved to another driver: take it out of the old driver's folder.
+
+    Only touches files KartCut itself put there (listed in its own index), never the
+    original footage: a file is removed only if it sits inside the sorted folder,
+    isn't the source path, and the source still exists.
+    """
+    keep = {(r["folder"], r["clip"]) for r in rows}
+    dest_r = dest.resolve()
+    removed = 0
+    for r in previous:
+        if (r.get("folder"), r.get("clip")) in keep or r.get("result") not in ("linked", "copied"):
+            continue
+        src = Path(r.get("source", ""))
+        folder = (dest / r["folder"]).resolve()
+        if dest_r not in folder.parents or not src.exists():
+            continue
+        stem = Path(r["clip"]).stem
+        for name in (r["clip"], stem + "M01.XML", stem + "M01.xml"):
+            f = folder / name
+            if not f.exists() or f.resolve() == src.resolve():
+                continue
+            try:
+                f.unlink()
+                if name == r["clip"]:
+                    removed += 1
+            except OSError:
+                pass
+        try:
+            if folder.exists() and not any(folder.iterdir()):
+                folder.rmdir()
+        except OSError:
+            pass
+    return removed

@@ -81,6 +81,8 @@
         <div class="row gap">
           <div class="seg" id="kartView"><button type="button" data-v="groups" class="on">Groups</button><button type="button" data-v="all">All karts</button></div>
           <label class="check"><input type="checkbox" id="candUnassigned" checked> Only unidentified</label>
+          <label class="check"><input type="checkbox" id="helmetMode"> Helmet close-up</label>
+          <label class="check slim">Size <input type="range" id="cropSize" min="90" max="340" step="10"></label>
           <span class="spacer"></span>
           <button class="btn small" id="rematchBtn" type="button" title="Recompute helmet/suit/kart fingerprints and match again">Re-match karts</button>
         </div>
@@ -99,9 +101,12 @@
         <div class="toolbar">
           <input id="clipSearch" placeholder="Search clip name">
           <select id="clipSort"><option value="time">Shooting order</option><option value="score">Best highlights first</option><option value="name">Name</option></select>
+          <label class="check slim">Size <input type="range" id="cardSize" min="160" max="520" step="10"></label>
           <span class="spacer"></span>
           <button class="btn ghost" id="sortDisk" type="button">Sort into driver folders…</button>
         </div>
+        <div id="bulkBar" class="bulk" hidden></div>
+        <p class="hint" id="clipHint">Wrong driver? Open the clip and use Move to, or drag clips onto a driver on the left. Ctrl+click (or tick) to select several.</p>
         <div id="clipGrid" class="grid"></div>
       </div>
     </div>

@@ -327,6 +327,40 @@ def clip_drivers(cid: str, body: dict = Body(...)):
     return p.clip_detail(cid)
 
 
+@app.post("/api/clips/move")
+def clips_move(body: dict = Body(...)):
+    """Put clips in the right driver's bin. mode: move (replace), add, remove.
+    Moving also labels the clip's main kart, so the matcher learns from it."""
+    from .identify import track_share
+
+    p = proj()
+    did = body.get("driver") or None
+    mode = body.get("mode", "move")
+    if did is not None and did not in p.data["drivers"]:
+        raise HTTPException(400, "Unknown driver")
+    with p.lock:
+        for cid in body.get("clips", []):
+            if cid not in p.data["clips"]:
+                continue
+            ident = p.derived.get("clips", {}).get(cid, {}).get("identity", {})
+            current = [d["id"] for d in ident.get("drivers", [])]
+            if mode == "add":
+                new = current + ([did] if did and did not in current else [])
+            elif mode == "remove":
+                new = [d for d in current if d != did]
+            else:
+                new = [did] if did else []
+            p.data["clip_overrides"][cid] = new
+            an = p.load_analysis(cid) or {}
+            share = track_share(an)
+            if share and mode == "move":
+                main = max(share, key=share.get)
+                p.data["track_overrides"].setdefault(cid, {})[str(main)] = did if did else "none"
+        p.save()
+    p.finalise()
+    return {"ok": True}
+
+
 @app.post("/api/clips/{cid}/junk")
 def clip_junk(cid: str, body: dict = Body(...)):
     p = proj()
@@ -424,12 +458,14 @@ def rematch(body: dict = Body(default={})):
     m = models()
 
     def fn(job: Job):
-        job.set(0.0, "Loading appearance model")
-        n = fingerprint.refresh(p, m, progress=job.set, force=bool(body.get("force")))
+        hd = fingerprint.hd_crops(p, progress=lambda f, msg: job.set(0.6 * f, msg), cancelled=job.cancelled)
+        job.set(0.6, "Loading appearance model")
+        n = fingerprint.refresh(p, m, progress=lambda f, msg: job.set(0.6 + 0.35 * f, msg),
+                                force=bool(body.get("force")))
         job.set(0.98, "Matching karts to drivers")
         p.finalise()
         st = p.derived.get("id_stats", {})
-        return {"clips_updated": n, **st}
+        return {"clips_updated": n, "hd_previews": hd, **st}
 
     return S.jobs.submit("rematch", "Re-match karts", fn).view()
 

@@ -21,7 +21,15 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 
+function pref(key, dflt) {
+  try { const v = localStorage.getItem(`kc_${key}`); return v === null ? dflt : JSON.parse(v); } catch (_) { return dflt; }
+}
+function setPref(key, v) {
+  try { localStorage.setItem(`kc_${key}`, JSON.stringify(v)); } catch (_) { /* private mode */ }
+}
+
 const S = {
+  sel: new Set(), cropSize: pref("cropSize", 130), cardSize: pref("cardSize", 230), helmet: pref("helmet", false),
   tab: "ingest", status: null, clips: [], bins: null, drivers: [], bin: "all", selDriver: null,
   candidates: [], groups: [], groupStats: {}, kartView: "groups", exposure: null, plans: null, jobSeen: {}, offSources: [], ver: Date.now(), music: null, seed: 1,
 };
@@ -176,7 +184,7 @@ async function onJobFinished(j) {
   if (j.kind === "shotmatch" && j.result) $("#matchResult").replaceChildren(
     h("div", { class: "banner good" }, `${j.result.count} LUTs written`),
     h("button", { class: "btn small", onclick: () => openPath(j.result.folder) }, "Open folder"));
-  if (j.kind === "rematch" && j.result) toast(`Re-matched: ${j.result.seeds || 0} karts known for sure, the rest matched by look.`);
+  if (j.kind === "rematch" && j.result) toast(`Re-matched. ${j.result.hd_previews || 0} sharper kart previews, ${j.result.seeds || 0} karts known for sure, the rest matched by look.`);
   if (j.kind === "sort" && j.result) toast(`Sorted ${j.result.placed} clips into ${j.result.folder}`);
   if (j.kind === "analyse" && j.result && j.result.errors) toast(`${j.result.errors} clip(s) failed. See Clips > Pending.`, true);
   refreshTab();
@@ -325,8 +333,23 @@ function renderClips() {
   bins.replaceChildren();
   if (!S.bins) return;
   const sp = S.bins.special || {};
-  const bin = (key, label, count) => bins.append(h("div", { class: `bin${S.bin === key ? " on" : ""}`,
-    onclick: () => { S.bin = key; renderClips(); } }, h("span", {}, label), h("span", { class: "c" }, count ?? "")));
+  const bin = (key, label, count) => {
+    const el = h("div", { class: `bin${S.bin === key ? " on" : ""}`, onclick: () => { S.bin = key; renderClips(); } },
+      h("span", {}, label), h("span", { class: "c" }, count ?? ""));
+    const target = key.startsWith("driver:") ? key.slice(7) : key === "broll" ? "" : key === "junk" ? "junk" : null;
+    if (target !== null) {
+      el.title = target === "junk" ? "Drop clips here to junk them" : target ? `Drop clips here to move them to ${label}` : "Drop clips here: no driver";
+      el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("drop"); });
+      el.addEventListener("dragleave", () => el.classList.remove("drop"));
+      el.addEventListener("drop", (e) => {
+        e.preventDefault(); el.classList.remove("drop");
+        const ids = JSON.parse(e.dataTransfer.getData("text/plain") || "[]");
+        if (!ids.length) return;
+        if (target === "junk") junkClips(ids); else moveClips(ids, target || null, "move");
+      });
+    }
+    bins.append(el);
+  };
   const analysedCount = S.clips.filter((c) => c.status === "analysed" && !(c.junk && c.junk.is_junk)).length;
   bin("all", "All clips", analysedCount);
   if (sp.review) bin("review", "⚠ Needs review", sp.review);
@@ -348,7 +371,9 @@ function renderClips() {
   if (sort === "score") list.sort((a, b) => b.best_score - a.best_score);
   else if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name));
   const grid = $("#clipGrid");
+  grid.style.setProperty("--card", `${S.cardSize}px`);
   grid.replaceChildren();
+  renderBulk();
   if (!list.length) {
     grid.append(h("div", { class: "empty" }, S.clips.length ? "Nothing in this bin." :
       "No clips yet. Add a footage folder on the Ingest tab and press Analyse."));
@@ -371,8 +396,63 @@ function clipCard(c) {
   if (c.status === "error") tags.append(h("span", { class: "tag review", title: c.error }, "Analysis failed"));
   if (c.status === "new") tags.append(h("span", { class: "tag" }, "Not analysed"));
   for (const t of c.tags) tags.append(h("span", { class: `tag ${t.replace(/\s+/g, "-")}` }, t));
-  return h("div", { class: "clip", onclick: () => openClip(c.id) }, thumb,
-    h("div", { class: "meta" }, h("div", { class: "name" }, h("span", {}, c.name), h("span", {}, (c.created || "").slice(11, 16))), tags));
+  const pick = h("input", { type: "checkbox", class: "pick", checked: S.sel.has(c.id), title: "Select",
+    onclick: (e) => { e.stopPropagation(); toggleSel(c.id); } });
+  const card = h("div", { class: `clip${S.sel.has(c.id) ? " selected" : ""}`, draggable: "true",
+    onclick: (e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) { toggleSel(c.id); } else openClip(c.id); } },
+  pick, thumb,
+  h("div", { class: "meta" }, h("div", { class: "name" }, h("span", {}, c.name), h("span", {}, (c.created || "").slice(11, 16))), tags));
+  card.addEventListener("dragstart", (e) => {
+    const ids = S.sel.has(c.id) ? [...S.sel] : [c.id];
+    e.dataTransfer.setData("text/plain", JSON.stringify(ids));
+    e.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging");
+  });
+  card.addEventListener("dragend", () => card.classList.remove("dragging"));
+  return card;
+}
+
+function toggleSel(id) {
+  if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id);
+  renderClips();
+}
+
+function driverOptions(placeholder, withNone) {
+  const ds = S.drivers.slice().sort((a, b) => (a.category || "").localeCompare(b.category || "") || (+a.number || 0) - (+b.number || 0));
+  return [h("option", { value: "" }, placeholder), ...ds.map((d) => h("option", { value: d.id }, driverName(d.id))),
+    withNone ? h("option", { value: "__none" }, "No driver (B-roll / other racer)") : null];
+}
+
+async function moveClips(ids, driver, mode = "move") {
+  await api("POST", "/api/clips/move", { clips: ids, driver, mode });
+  S.sel.clear();
+  await loadClips();
+  if (S.tab === "clips") renderClips();
+  const who = driver ? driverName(driver) : "no driver";
+  toast(mode === "add" ? `Also added to ${who}` : mode === "remove" ? `Removed from ${who}` :
+    `${ids.length} clip${ids.length > 1 ? "s" : ""} moved to ${who}. KartCut learns from this.`);
+}
+
+async function junkClips(ids) {
+  for (const id of ids) await api("POST", `/api/clips/${id}/junk`, { junk: true });
+  S.sel.clear();
+  await loadClips(); renderClips();
+  toast(`${ids.length} clip${ids.length > 1 ? "s" : ""} moved to Junk`);
+}
+
+function renderBulk() {
+  const bar = $("#bulkBar");
+  bar.replaceChildren();
+  bar.hidden = S.sel.size === 0;
+  if (!S.sel.size) return;
+  const ids = [...S.sel];
+  bar.append(h("strong", {}, `${ids.length} selected`),
+    h("select", { onchange: (e) => { const v = e.target.value; if (v) moveClips(ids, v === "__none" ? null : v, "move"); } },
+      driverOptions("Move to…", true)),
+    h("select", { onchange: (e) => { if (e.target.value) moveClips(ids, e.target.value, "add"); } }, driverOptions("Also add…", false)),
+    h("button", { class: "btn small ghost", onclick: () => junkClips(ids) }, "Junk"),
+    h("span", { class: "spacer" }),
+    h("button", { class: "link", onclick: () => { S.sel.clear(); renderClips(); } }, "Clear selection"));
 }
 
 /* ------------------------------------------------------------------ clip drawer */
@@ -382,6 +462,18 @@ async function openClip(cid) {
   $("#dTitle").textContent = `${d.clip.name}  ·  ${fmtDur(d.clip.duration)}  ·  ${(d.clip.fps || 0).toFixed(2)} fps`;
   const body = $("#dBody");
   body.replaceChildren();
+  const chips = (s.drivers || []).map((x) => h("span", { class: "dchip" }, x.label,
+    h("button", { title: "Remove this driver from the clip", onclick: async () => { await moveClips([cid], x.id, "remove"); openClip(cid); } }, "✕")));
+  body.append(h("div", { class: "dmove" },
+    h("strong", {}, "Driver:"), chips.length ? chips : h("span", { class: "hint" }, s.needs_review ? "not sure (needs review)" : "none"),
+    h("span", { class: "spacer" }),
+    h("select", { onchange: async (e) => { const v = e.target.value; if (!v) return; await moveClips([cid], v === "__none" ? null : v, "move"); openClip(cid); } },
+      driverOptions("Move to…", true)),
+    h("select", { onchange: async (e) => { if (!e.target.value) return; await moveClips([cid], e.target.value, "add"); openClip(cid); } },
+      driverOptions("Also in…", false)),
+    h("button", { class: "btn small ghost", title: "Forget manual driver choices for this clip", onclick: async () => {
+      await api("POST", `/api/clips/${cid}/drivers`, { drivers: null }); await loadClips(); if (S.tab === "clips") renderClips(); openClip(cid);
+    } }, "Auto")));
   let video = null;
   if (d.clip.proxy) {
     video = h("video", { src: media(d.clip.proxy), controls: true, preload: "metadata" });
@@ -513,7 +605,7 @@ function renderGroups() {
       assignGroup(g, d.id);
     } }, "+ New driver");
     el.append(h("div", { class: "group" },
-      h("div", { class: "gcrops" }, g.crops.slice(0, 10).map((c) => h("img", { src: media(c), loading: "lazy", alt: "" }))),
+      h("div", { class: "gcrops" }, g.crops.slice(0, 12).map((c) => h("div", { class: "gci" }, h("img", { src: media(c), loading: "lazy", alt: "" })))),
       h("div", { class: "gfoot" }, h("strong", {}, `${g.tracks.length} karts · ${g.clips} clips`),
         reads ? h("span", { class: "num" }, `reads ${reads}`) : null, h("span", { class: "spacer" }), sel, add)));
   }
@@ -524,15 +616,19 @@ function renderDrivers() {
   tbl.replaceChildren();
   const counts = {};
   for (const list of Object.values((S.bins && S.bins.categories) || {})) for (const d of list) counts[d.id] = d.count;
-  tbl.append(h("tr", {}, ["#", "Name", "Category", "Refs", "Clips", "Incidents", ""].map((t) => h("th", {}, t))));
+  const widths = ["64px", "", "22%", "150px", "48px", "104px", "28px"];
+  tbl.append(h("tr", {}, ["#", "Name", "Category", "Refs", "Clips", "Incidents", ""].map((t, i) =>
+    h("th", { style: widths[i] ? `width:${widths[i]}` : null }, t))));
   const save = async (d, patch) => { await api("POST", "/api/drivers", { id: d.id, ...patch }); await loadClips(); };
   const sorted = S.drivers.slice().sort((a, b) => (a.category || "").localeCompare(b.category || "") || (+a.number || 0) - (+b.number || 0));
   for (const d of sorted) {
     const refs = h("div", { class: "refs" });
-    for (const r of d.refs || []) {
+    const refList = d.refs || [];
+    for (const r of refList.slice(0, 3)) {
       const c = S.candidates.find((x) => x.clip === r.clip && x.track === r.track);
       if (c) refs.append(h("img", { src: media(c.crop), alt: "", title: c.clip_name }));
     }
+    if (refList.length > 3) refs.append(h("span", { class: "more" }, `+${refList.length - 3}`));
     if (!(d.refs || []).length) refs.append(h("span", { class: "hint" }, "none"));
     const inc = h("select", { onclick: (e) => e.stopPropagation(), onchange: (e) => save(d, { include_incidents: e.target.value === "" ? null : e.target.value === "1" }) },
       h("option", { value: "" }, "Default"), h("option", { value: "1", selected: d.include_incidents === true }, "Include"),
@@ -560,6 +656,10 @@ function renderDrivers() {
   $("#kartHint").textContent = groupsView
     ? "Karts that look alike (helmet, suit and kart colours) are grouped. Name a group once and every clip in it is sorted, then KartCut re-matches the rest. Pick Other racer for competitors you don't need. Kart numbers in the table help too."
     : "Select a driver on the left, then click 1 to 3 clear shots of their kart as references.";
+  for (const id of ["#candidates", "#groupList"]) {
+    $(id).style.setProperty("--cw", `${S.cropSize}px`);
+    $(id).classList.toggle("helmet", !!S.helmet);
+  }
   if (groupsView) { renderGroups(); return; }
   const grid = $("#candidates");
   grid.replaceChildren();
@@ -573,7 +673,7 @@ function renderDrivers() {
       if (!sel) { toast("Select a driver in the table first"); return; }
       await api("POST", `/api/drivers/${sel.id}/ref`, { clip: c.clip, track: c.track, add: !isRef });
       await loadClips(); await loadCandidates(); renderDrivers();
-    } }, h("img", { src: media(c.crop), loading: "lazy", alt: "" }), h("div", { class: "cap" }, cap)));
+    } }, h("div", { class: "ci" }, h("img", { src: media(c.crop), loading: "lazy", alt: "" })), h("div", { class: "cap" }, cap)));
   }
 }
 
@@ -783,6 +883,12 @@ function wire() {
     S.selDriver = d.id; await loadClips(); renderDrivers();
   };
   $("#candUnassigned").onchange = renderDrivers;
+  $("#cropSize").value = S.cropSize;
+  $("#cropSize").oninput = (e) => { S.cropSize = +e.target.value; setPref("cropSize", S.cropSize); renderDrivers(); };
+  $("#helmetMode").checked = !!S.helmet;
+  $("#helmetMode").onchange = (e) => { S.helmet = e.target.checked; setPref("helmet", S.helmet); renderDrivers(); };
+  $("#cardSize").value = S.cardSize;
+  $("#cardSize").oninput = (e) => { S.cardSize = +e.target.value; setPref("cardSize", S.cardSize); $("#clipGrid").style.setProperty("--card", `${S.cardSize}px`); };
   $$("#kartView button").forEach((b) => (b.onclick = () => { S.kartView = b.dataset.v; renderDrivers(); }));
   $("#rematchBtn").onclick = async () => { await api("POST", "/api/rematch", {}); toast("Re-matching karts"); };
 
