@@ -390,6 +390,10 @@ function renderClips() {
   let list = S.clips.filter(clipFilter);
   if (sort === "score") list.sort((a, b) => b.best_score - a.best_score);
   else if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name));
+  S.clipList = list;
+  const allSel = list.length > 0 && list.every((c) => S.sel.has(c.id));
+  $("#clipSelAll").textContent = allSel ? "Unselect all" : `Select all ${list.length}`;
+  $("#clipSelAll").disabled = !list.length;
   const grid = $("#clipGrid");
   grid.style.setProperty("--card", `${S.cardSize}px`);
   grid.replaceChildren();
@@ -460,13 +464,29 @@ async function junkClips(ids) {
   toast(`${ids.length} clip${ids.length > 1 ? "s" : ""} moved to Junk`);
 }
 
+function selectAllClips() {
+  const shown = S.clipList || [];
+  const allSel = shown.length > 0 && shown.every((c) => S.sel.has(c.id));
+  if (allSel) S.sel.clear(); else for (const c of shown) S.sel.add(c.id);
+  renderClips();
+}
+
+function clipKeys(e) {
+  if (S.tab !== "clips" || ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName) || !$("#drawer").hidden) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") { e.preventDefault(); selectAllClips(); }
+  else if (e.key === "Escape" && S.sel.size) { S.sel.clear(); renderClips(); }
+}
+
 function renderBulk() {
   const bar = $("#bulkBar");
   bar.replaceChildren();
   bar.hidden = S.sel.size === 0;
   if (!S.sel.size) return;
   const ids = [...S.sel];
+  const shown = S.clipList || [];
+  const allSel = shown.length > 0 && shown.every((c) => S.sel.has(c.id));
   bar.append(h("strong", {}, `${ids.length} selected`),
+    ...(allSel ? [] : [h("button", { class: "btn small ghost", type: "button", onclick: selectAllClips }, `Select all ${shown.length}`)]),
     h("select", { onchange: (e) => { const v = e.target.value; if (v) moveClips(ids, v === "__none" ? null : v, "move"); } },
       driverOptions("Move to…", true)),
     h("select", { onchange: (e) => { if (e.target.value) moveClips(ids, e.target.value, "add"); } }, driverOptions("Also add…", false)),
@@ -1325,6 +1345,8 @@ function wire() {
   $("#showBg").checked = !!S.showBg;
   $("#showBg").onchange = (e) => { S.showBg = e.target.checked; setPref("showBg", S.showBg); S.kSel.clear(); renderDesk(); };
   document.addEventListener("keydown", deskKeys);
+  document.addEventListener("keydown", clipKeys);
+  $("#clipSelAll").onclick = selectAllClips;
   $("#cropSize").value = S.cropSize;
   $("#cropSize").oninput = (e) => { S.cropSize = +e.target.value; setPref("cropSize", S.cropSize); $("#desk").style.setProperty("--cw", `${S.cropSize}px`); };
   $$("#kartOrient button").forEach((b) => (b.onclick = () => { S.kartOrient = b.dataset.v; setPref("kartOrient", S.kartOrient); S.kSel.clear(); renderDesk(); }));
