@@ -1,4 +1,4 @@
-name: Deploy carousel maker
+name: Deploy carousel maker and Bulk Clock
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - 'carousel/**'
+      - 'bulk/**'
       - '.github/workflows/carousel.yml'
   workflow_dispatch:
 
@@ -27,8 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Assemble site (carousel at root, Bulk Clock at /bulk)
+        run: |
+          mkdir -p _pages
+          cp -r carousel/. _pages/
+          cp -r bulk _pages/bulk
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: carousel
+          path: _pages
       - id: deployment
         uses: actions/deploy-pages@v4
