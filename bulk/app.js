@@ -159,7 +159,13 @@
   /* ---------- notifications ---------- */
   let swReg = null;
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').then(r => { swReg = r; }).catch(() => {});
+    // updateViaCache 'none' + update() on every reopen = new versions land without waiting out GitHub's cache
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => { swReg = r; r.update().catch(() => {}); }).catch(() => {});
+    let hadController = !!navigator.serviceWorker.controller, reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && !reloaded && sheetMeal === null) { reloaded = true; location.reload(); }
+      hadController = true;
+    });
   }
   const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -600,102 +606,158 @@
   /* ---------- Gemini quick log ---------- */
   const GEM = 'https://generativelanguage.googleapis.com/v1beta';
   const DEFAULT_MODEL = 'gemini-flash-latest';
-  let Q = { text: '', img: null, busy: false, result: null, error: '' };
+  // day: day key to log into (null = today), meal: slot index, -1 Extra, null = auto by time
+  let Q = { text: '', img: null, busy: false, result: null, error: '', day: null, meal: null };
   let sheetMode = 'meal';
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   const AI_SYSTEM = `You log food for someone in Malaysia who weighs about 53 kg and is bulking on roughly 500 kcal meals.
 From the description and/or photo, list every food and drink as its own item with a realistic calorie estimate for a typical Malaysian portion (mamak, hawker, kopitiam, home cooking, convenience store, fast food). Use any quantity or size given. Count sugar and condensed milk in drinks.
-If the user says when they ate an item ("breakfast at 9", "lunch", "this morning", "just now"), set eaten_at to a 24h HH:MM time for that item, using the current time given to resolve words like "just now" or "an hour ago". If they don't say, leave eaten_at empty.
+When: if the user says when they ate an item ("breakfast at 9", "lunch", "this morning", "just now", "an hour ago"), set eaten_at to a 24h HH:MM time, using the current time given. Typical times: breakfast 08:30, lunch 13:00, tea 16:00, dinner 19:30, supper 23:00. If they say it was on an earlier day ("yesterday", "on Monday", "2 days ago"), set days_ago (1 = yesterday) using today's date given. Leave eaten_at empty and days_ago 0 when not said.
 Keep item names short (max 4 words); keep Malay food names in Malay.
-comment: one short line (max 12 words) on how this compares with a 500 kcal meal, or a quick add-on to reach it. No lectures.`;
+comment: one short line (max 12 words) on how this compares with a 500 kcal meal, or a quick add-on to reach it. No lectures.
+Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or null","days_ago":0}],"comment":"..."}`;
 
   const AI_SCHEMA = {
     type: 'OBJECT',
     properties: {
       items: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
-        name: { type: 'STRING' }, kcal: { type: 'INTEGER' }, eaten_at: { type: 'STRING', nullable: true } }, required: ['name', 'kcal'] } },
+        name: { type: 'STRING' }, kcal: { type: 'INTEGER' },
+        eaten_at: { type: 'STRING', nullable: true }, days_ago: { type: 'INTEGER', nullable: true } }, required: ['name', 'kcal'] } },
       comment: { type: 'STRING' },
     },
     required: ['items'],
   };
 
   const gemHeaders = () => ({ 'Content-Type': 'application/json', 'x-goog-api-key': S.aiKey });
-  async function pickModel() {
-    const r = await fetch(`${GEM}/models?pageSize=200`, { headers: gemHeaders() });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const names = (j.models || [])
-      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
-      .map(m => m.name.replace(/^models\//, ''))
-      .filter(n => /flash/.test(n) && !/image|tts|live|audio|embed|exp|preview/.test(n))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-    return names.find(n => !/lite/.test(n)) || names[0] || null;
+  let modelList = null;
+  async function flashModels() {
+    if (modelList) return modelList;
+    try {
+      const r = await fetch(`${GEM}/models?pageSize=200`, { headers: gemHeaders() });
+      if (!r.ok) return [];
+      const j = await r.json();
+      const names = (j.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map(m => m.name.replace(/^models\//, ''))
+        .filter(n => /flash/.test(n) && !/image|tts|live|audio|embed|exp/.test(n))
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      // full Flash first (stable before preview), then Lite
+      const rank = n => (/lite/.test(n) ? 2 : 0) + (/preview/.test(n) ? 1 : 0);
+      modelList = names.sort((a, b) => rank(a) - rank(b));
+    } catch { modelList = []; }
+    return modelList;
   }
+  const googleMsg = txt => { try { return JSON.parse(txt).error.message || ''; } catch { return ''; } };
   function gemError(status, txt) {
+    const msg = googleMsg(txt);
     if (/API_KEY_INVALID|API key not valid/i.test(txt)) return "That Gemini API key isn't valid. Check it in Setup.";
-    if (status === 403) return 'This key is not allowed to use the Gemini API.';
-    if (status === 429) return 'Gemini quota hit. Wait a minute and try again.';
-    if (status >= 500) return 'Gemini is having a moment. Try again.';
-    return `Gemini error ${status}.`;
-  }
-  async function askGemini(text, img) {
-    const now = new Date();
-    const parts = [{ text: `Current time: ${pad(now.getHours())}:${pad(now.getMinutes())}.\nWhat I ate: ${text || '(see photo)'}` }];
-    if (img) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img.split(',')[1] } });
-    const body = JSON.stringify({
-      systemInstruction: { parts: [{ text: AI_SYSTEM }] },
-      contents: [{ role: 'user', parts }],
-      generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: AI_SCHEMA },
-    });
-    const call = m => fetch(`${GEM}/models/${encodeURIComponent(m)}:generateContent`, { method: 'POST', headers: gemHeaders(), body });
-    let model = S.aiModel || DEFAULT_MODEL;
-    let r;
-    try { r = await call(model); } catch { throw new Error('No connection to Gemini.'); }
-    if (r.status === 404) {
-      const alt = await pickModel().catch(() => null);
-      if (alt && alt !== model) { model = alt; S.aiModel = alt; save(); r = await call(alt); }
-    }
-    if (!r.ok) throw new Error(gemError(r.status, await r.text()));
-    const j = await r.json();
-    const txt = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
-    if (!txt) throw new Error(j.promptFeedback?.blockReason ? 'Gemini refused that one.' : 'Gemini sent back nothing. Try again.');
-    let out;
-    try { out = JSON.parse(txt.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { throw new Error("Couldn't read Gemini's answer. Try again."); }
-    const items = (out.items || []).map(it => ({ n: String(it.name || 'Food').slice(0, 40), k: Math.max(0, Math.round(Number(it.kcal) || 0)), at: it.eaten_at || null })).filter(it => it.k > 0);
-    if (!items.length) throw new Error("Gemini couldn't find any food in that.");
-    return { items, comment: out.comment || '', model };
+    if (status === 403) return 'This key is not allowed to use the Gemini API. ' + msg;
+    if (status === 429) return 'Gemini free-tier limit hit. Wait a minute and try again.';
+    return `Gemini error ${status}${msg ? ': ' + msg : ''}`;
   }
 
-  // Which meal slot does food eaten at minute `min` (of today's day) belong to?
-  function slotFor(min, explicit) {
-    const key = todayKey();
+  async function askGemini(text, img) {
+    const now = new Date();
+    const parts = [{ text: `Today is ${now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}. Current time: ${pad(now.getHours())}:${pad(now.getMinutes())}.\nWhat I ate: ${text || '(see photo)'}` }];
+    if (img) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img.split(',')[1] } });
+    const payload = schema => JSON.stringify({
+      systemInstruction: { parts: [{ text: AI_SYSTEM }] },
+      contents: [{ role: 'user', parts }],
+      generationConfig: schema
+        ? { temperature: 0.2, responseMimeType: 'application/json', responseSchema: AI_SCHEMA }
+        : { temperature: 0.2, responseMimeType: 'application/json' },
+    });
+    const call = (m, schema) => fetch(`${GEM}/models/${encodeURIComponent(m)}:generateContent`, { method: 'POST', headers: gemHeaders(), body: payload(schema) });
+
+    // Try: chosen model → same again after a pause → same without the JSON schema → other Flash models.
+    const tried = new Set();
+    let model = S.aiModel || DEFAULT_MODEL, schema = true, lastErr = '', retried = false;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      tried.add(model);
+      let r;
+      try { r = await call(model, schema); } catch { throw new Error('No connection to Gemini. Check your signal.'); }
+      if (r.ok) {
+        const j = await r.json();
+        const txt = (j.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('').trim();
+        if (!txt) { lastErr = j.promptFeedback?.blockReason ? 'Gemini refused that one.' : 'Gemini sent back nothing.'; break; }
+        let out;
+        try { out = JSON.parse(txt.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { lastErr = "Couldn't read Gemini's answer."; if (schema) { schema = false; continue; } break; }
+        const items = (out.items || []).map(it => ({
+          n: String(it.name || 'Food').slice(0, 40), k: Math.max(0, Math.round(Number(it.kcal) || 0)),
+          at: it.eaten_at && it.eaten_at !== 'null' ? String(it.eaten_at) : null, ago: clamp(Math.round(Number(it.days_ago) || 0), 0, 30),
+        })).filter(it => it.k > 0);
+        if (!items.length) throw new Error("Gemini couldn't find any food in that.");
+        if (model !== (S.aiModel || DEFAULT_MODEL)) { S.aiModel = model; save(); }
+        return { items, comment: out.comment || '', model };
+      }
+      const body = await r.text();
+      lastErr = gemError(r.status, body);
+      if (/API_KEY_INVALID|API key not valid/i.test(body) || r.status === 403) break;
+      if (r.status === 400 && schema && /schema|response_?schema|Invalid JSON payload|Unknown name/i.test(body)) { schema = false; continue; }
+      if (r.status >= 500 || r.status === 429) {
+        if (!retried) { retried = true; await sleep(1500); continue; }
+        if (schema && r.status >= 500) { schema = false; continue; }
+      }
+      if (r.status === 404 || r.status >= 500 || r.status === 429) {
+        const alt = (await flashModels()).find(n => !tried.has(n));
+        if (alt) { model = alt; schema = true; continue; }
+      }
+      break;
+    }
+    throw new Error(lastErr || 'Gemini failed. Try again.');
+  }
+
+  /* where things land */
+  const dayLabel = k => { const tk = todayKey(); return k === tk ? 'Today' : k === addDays(tk, -1) ? 'Yesterday' : parseYmd(k).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); };
+  const nowMin = () => Math.round((Date.now() - parseYmd(todayKey()).getTime()) / 60e3);
+  // closest slot to minute `min`; when not explicit, skip slots already ~full
+  function slotFor(key, min, explicit) {
     const c = S.times.map((t, i) => ({ i, d: Math.abs(t - min), full: mealKcal(key, i) >= S.kcalPerMeal * 0.8 }));
     const pool = explicit ? c : (c.some(x => !x.full) ? c.filter(x => !x.full) : c);
     return pool.sort((a, b) => a.d - b.d)[0].i;
   }
-  const nowMin = () => Math.round((Date.now() - parseYmd(todayKey()).getTime()) / 60e3);
-  function atToMin(at) {
+  function firstOpenSlot(key) {
+    const i = S.times.findIndex((_, j) => mealKcal(key, j) < S.kcalPerMeal * 0.8);
+    return i === -1 ? S.times.length - 1 : i;
+  }
+  function atToMin(at, key) {
     const m = /^(\d{1,2}):(\d{2})/.exec(at || '');
     if (!m) return null;
     let v = Number(m[1]) * 60 + Number(m[2]);
     if (v < toMin(S.wake) - 60) v += 1440;
-    return v > nowMin() + 30 ? null : v;
+    if (key === todayKey() && v > nowMin() + 30) return null; // can't have eaten in the future
+    return v;
   }
+  // Q.day / Q.meal override what Gemini worked out
   function logItems(items, source) {
-    const key = todayKey();
-    const nowSlot = slotFor(nowMin(), false);
-    const added = items.map(it => {
-      const at = atToMin(it.at);
-      const m = at === null ? nowSlot : slotFor(at, true);
+    const tk = todayKey();
+    const added = [];
+    items.forEach(it => {
+      const key = Q.day || (it.ago ? addDays(tk, -it.ago) : tk);
+      let m;
+      if (Q.meal !== null) m = Q.meal;
+      else {
+        const at = atToMin(it.at, key);
+        if (at !== null) m = slotFor(key, at, true);
+        else m = key === tk ? slotFor(key, nowMin(), false) : firstOpenSlot(key);
+      }
       const e = { id: uid(), m, n: it.n, k: it.k, t: Date.now(), ai: 1 };
       (S.log[key] = S.log[key] || []).push(e);
-      return e;
+      added.push({ ...e, key });
     });
     if (source) {
-      S.aiRecent = [{ t: source.slice(0, 48), items: items.map(({ n, k }) => ({ n, k })) }, ...(S.aiRecent || []).filter(r => r.t !== source.slice(0, 48))].slice(0, 6);
+      const t = source.slice(0, 48);
+      S.aiRecent = [{ t, items: items.map(({ n, k }) => ({ n, k })) }, ...(S.aiRecent || []).filter(r => r.t !== t)].slice(0, 6);
     }
     save();
     return added;
+  }
+  function autoHint() {
+    const tk = todayKey(), key = Q.day || tk;
+    if (Q.meal !== null) return `Everything goes into <b>${Q.meal === -1 ? 'Extra' : `meal ${Q.meal + 1}`}</b>${key !== tk ? `, ${dayLabel(key).toLowerCase()}` : ''}.`;
+    if (key === tk) { const s = slotFor(tk, nowMin(), false); return `Goes into <b>meal ${s + 1}</b> (${clock12(S.times[s])}) unless you say when, e.g. "roti canai at 9am, nasi ayam for lunch, yesterday's dinner was mee goreng".`; }
+    return `Goes into the meal matching the time you mention ("lunch", "at 8pm"), otherwise the first empty meal ${/^(Today|Yesterday)$/.test(dayLabel(key)) ? dayLabel(key).toLowerCase() : 'on ' + dayLabel(key)}.`;
   }
 
   async function shrinkPhoto(file) {
@@ -728,7 +790,7 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
   }
 
   function renderQuick() {
-    const key = todayKey();
+    const tk = todayKey();
     const head = `<div class="grab"></div>
       <div class="sheet-head"><h2>Quick log</h2><button class="btn sm" data-act="close">Done</button></div>`;
     if (!S.aiKey) {
@@ -742,22 +804,35 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
     }
     if (Q.result) {
       const tot = Q.result.added.reduce((a, e) => a + e.k, 0);
-      const bySlot = {};
-      Q.result.added.forEach(e => { (bySlot[e.m] = bySlot[e.m] || []).push(e); });
-      const rows = Object.keys(bySlot).map(Number).sort((a, b) => a - b).map(m => `
-        <div class="q-slot"><div class="q-slot-h"><b>Meal ${m + 1}</b> · ${clock12(S.times[m])}<span>${fmtK(mealKcal(key, m))} / ${S.kcalPerMeal}</span></div>
-        ${bySlot[m].map(e => `<div class="q-item"><span>${esc(e.n)}</span><b>${e.k}</b></div>`).join('')}</div>`).join('');
+      const groups = {};
+      Q.result.added.forEach(e => { const g = e.key + '|' + e.m; (groups[g] = groups[g] || []).push(e); });
+      const rows = Object.keys(groups).sort().map(g => {
+        const [key, ms] = g.split('|'); const m = Number(ms);
+        const name = m === -1 ? 'Extra' : `Meal ${m + 1}`;
+        const when = (key !== tk ? dayLabel(key) + ', ' : '') + (m === -1 ? '' : clock12(S.times[m]));
+        const fill = m === -1 ? '' : `<span>${fmtK(mealKcal(key, m))} / ${S.kcalPerMeal}</span>`;
+        return `<div class="q-slot"><div class="q-slot-h"><b>${name}</b> · ${when}${fill}</div>
+          ${groups[g].map(e => `<div class="q-item"><span>${esc(e.n)}</span><b>${e.k}</b></div>`).join('')}</div>`;
+      }).join('');
       $('#sheet').innerHTML = head + `
         <div class="q-done"><div class="eyebrow">LOGGED</div><div class="q-total">+${fmtK(tot)} <small>kcal</small></div>
         ${Q.result.comment ? `<p class="hint">${esc(Q.result.comment)}</p>` : ''}</div>
         ${rows}
-        <p class="hint">Wrong meal or number? Tap the meal on Today to fix it.</p>
+        <p class="hint">Wrong meal or number? Fix it in History.</p>
         <div class="row-btns"><button class="btn" data-act="ai-undo">Undo</button><button class="btn primary" data-act="ai-again">Log more</button></div>`;
       return;
     }
+    const dayOpts = Array.from({ length: 7 }, (_, j) => addDays(tk, -j)).map(k => `<option value="${k}" ${(Q.day || tk) === k ? 'selected' : ''}>${dayLabel(k)}</option>`).join('');
+    const key = Q.day || tk;
+    const mealOpts = `<option value="auto" ${Q.meal === null ? 'selected' : ''}>Auto, by time</option>`
+      + S.times.map((t, i) => `<option value="${i}" ${Q.meal === i ? 'selected' : ''}>Meal ${i + 1} · ${clock12(t)}${mealKcal(key, i) ? ` (${fmtK(mealKcal(key, i))})` : ''}</option>`).join('')
+      + `<option value="-1" ${Q.meal === -1 ? 'selected' : ''}>Extra</option>`;
     const recent = (S.aiRecent || []).map((r, i) => `<button class="q-chip" data-act="ai-recent" data-i="${i}">${esc(r.t)} <b>${fmtK(r.items.reduce((a, x) => a + x.k, 0))}</b></button>`).join('');
-    const slot = slotFor(nowMin(), false);
     $('#sheet').innerHTML = head + `
+      <div class="grid2 q-when">
+        <label class="field"><span>Day</span><select id="qDay" ${Q.busy ? 'disabled' : ''}>${dayOpts}</select></label>
+        <label class="field"><span>Meal</span><select id="qMeal" ${Q.busy ? 'disabled' : ''}>${mealOpts}</select></label>
+      </div>
       <textarea id="qText" rows="3" placeholder="What did you eat? e.g. 2 roti canai with dhal and a teh tarik" ${Q.busy ? 'disabled' : ''}>${esc(Q.text)}</textarea>
       ${Q.img ? `<div class="q-photo"><img src="${Q.img}" alt="Your food photo"><button class="x" data-act="ai-noimg" aria-label="Remove photo">×</button></div>` : ''}
       <div class="q-actions">
@@ -765,9 +840,8 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
         <button class="btn primary" data-act="ai-go" ${Q.busy ? 'disabled' : ''}>${Q.busy ? '<span class="spin"></span>Reading it' : 'Log it'}</button>
       </div>
       ${Q.error ? `<p class="q-err">${esc(Q.error)}</p>` : ''}
-      <p class="hint">Goes into <b>meal ${slot + 1}</b> (${clock12(S.times[slot])}) unless you say a time, e.g. "roti canai at 9am, nasi ayam for lunch". Tap the mic on your keyboard to say it instead of typing.</p>
+      <p class="hint">${autoHint()} Tap the mic on your keyboard to say it.</p>
       ${recent ? `<div class="sec-lbl">Again · no AI needed</div><div class="q-chips">${recent}</div>` : ''}`;
-    if (!Q.busy && !Q.img) setTimeout(() => { const t = $('#qText'); if (t && !Q.text) t.focus(); }, 250);
   }
 
   async function testKey() {
@@ -775,7 +849,7 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
     toast('Testing…');
     try {
       const r = await askGemini('1 banana', null);
-      toast(`Works: ${r.items[0].n} ≈ ${r.items[0].k} kcal`);
+      toast(`Works (${r.model}): ${r.items[0].n} ≈ ${r.items[0].k} kcal`);
       render();
     } catch (err) { toast(err.message); }
   }
@@ -783,7 +857,7 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
   function renderHistory() {
     const tk = todayKey();
     const target = dailyTarget();
-    const days = Array.from({ length: 21 }, (_, j) => addDays(tk, -j)).filter(k => entries(k).length || k === tk);
+    const days = Array.from({ length: 21 }, (_, j) => addDays(tk, -j)).filter((k, j) => entries(k).length || j < 3);
     const html = days.map(k => {
       const tot = dayKcal(k);
       const groups = S.times.map((t, i) => ({ i, list: entries(k).filter(e => e.m === i) })).filter(g => g.list.length);
@@ -793,6 +867,7 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
       return `<div class="card">
         <h3>${label}<span class="r"><b class="${tot >= target * 0.9 ? 'ok-t' : ''}">${fmtK(tot)}</b> / ${fmtK(target)}</span></h3>
         <div class="bar" style="margin:0 0 10px"><i style="width:${clamp(tot / target * 100, 0, 100)}%"></i></div>
+        <button class="btn sm h-add" data-act="quick-day" data-k="${k}"><span class="ai-mark">✦</span>Log food for ${/^(Today|Yesterday)$/.test(label) ? label.toLowerCase() : label}</button>
         ${groups.length ? groups.map(g => `<div class="h-meal"><div class="h-lbl">${g.i === -1 ? 'Extra' : `Meal ${g.i + 1} <small>${clock12(S.times[g.i])}</small>`}</div>
           <ul class="entries">${g.list.map(e => `<li>${e.ai ? '<span class="ai-mark">✦</span>' : ''}${esc(e.n)} · ${e.k}<button class="x" data-act="del-hist" data-k="${k}" data-id="${e.id}" aria-label="Remove">×</button></li>`).join('')}</ul></div>`).join('') : '<p class="hint" style="margin:0">Nothing logged yet.</p>'}
       </div>`;
@@ -801,9 +876,13 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
   }
 
   /* ---------- sheet ---------- */
-  function openQuick() {
+  function openQuick(opts = {}) {
     sheetMode = 'quick'; sheetMeal = -2;
-    if (!Q.busy) { Q.result = null; Q.error = ''; }
+    if (!Q.busy) {
+      Q.result = null; Q.error = '';
+      Q.day = opts.day && opts.day !== todayKey() ? opts.day : null;
+      Q.meal = opts.meal !== undefined ? opts.meal : null;
+    }
     $('#scrim').hidden = false; $('#sheet').hidden = false;
     document.body.style.overflow = 'hidden';
     renderSheet();
@@ -839,6 +918,7 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
         <button class="btn sm" data-act="close">Done</button>
       </div>
       <div class="mealpick">${picks}</div>
+      ${S.aiKey && m !== -1 ? `<button class="btn q-describe" data-act="quick-meal" data-meal="${m}"><span class="ai-mark">✦</span>Describe meal ${m + 1} instead</button>` : ''}
       ${ents.length ? `<ul class="entries">${ents.map(e => `<li>${e.ai ? '<span class="ai-mark">✦</span>' : ''}${esc(e.n)} · ${e.k}<button class="x" data-act="del-entry" data-id="${e.id}" aria-label="Remove">×</button></li>`).join('')}</ul>` : ''}
       <div class="custom">
         <input type="text" id="cName" placeholder="Something else" autocomplete="off">
@@ -873,17 +953,19 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
       case 'tab': setTab(b.dataset.tab); break;
       case 'log': openSheet(mi); break;
       case 'quick': openQuick(); break;
+      case 'quick-day': openQuick({ day: b.dataset.k }); break;
+      case 'quick-meal': openQuick({ meal: Number(b.dataset.meal) }); break;
       case 'ai-go': { const t = $('#qText'); if (t) Q.text = t.value; runQuick(); break; }
       case 'ai-noimg': Q.img = null; renderSheet(); break;
       case 'ai-again': Q.result = null; renderSheet(); break;
       case 'ai-undo': {
-        if (Q.result) { const ids = new Set(Q.result.added.map(e => e.id)); const k = todayKey(); S.log[k] = entries(k).filter(e => !ids.has(e.id)); save(); }
+        if (Q.result) { Q.result.added.forEach(e => { S.log[e.key] = entries(e.key).filter(x => x.id !== e.id); }); save(); }
         Q.result = null; renderSheet(); render(); toast('Undone');
         break;
       }
       case 'ai-recent': {
         const r = (S.aiRecent || [])[Number(b.dataset.i)];
-        if (r) { const added = logItems(r.items.map(x => ({ ...x, at: null })), r.t); Q.result = { added, comment: '' }; renderSheet(); render(); }
+        if (r) { const added = logItems(r.items.map(x => ({ ...x, at: null, ago: 0 })), r.t); Q.result = { added, comment: '' }; renderSheet(); render(); }
         break;
       }
       case 'go-ai-setup': closeSheet(); setTab('setup'); setTimeout(() => { const el = $('#aiCard'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 50); break;
@@ -966,6 +1048,12 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
     } else if (t.id === 'qImg' && t.files[0]) {
       const ta = $('#qText'); if (ta) Q.text = ta.value;
       shrinkPhoto(t.files[0]).then(d => { Q.img = d; renderSheet(); }).catch(() => toast("Couldn't read that photo"));
+    } else if (t.id === 'qDay') {
+      const ta = $('#qText'); if (ta) Q.text = ta.value;
+      Q.day = t.value === todayKey() ? null : t.value; renderSheet();
+    } else if (t.id === 'qMeal') {
+      const ta = $('#qText'); if (ta) Q.text = ta.value;
+      Q.meal = t.value === 'auto' ? null : Number(t.value); renderSheet();
     } else if (t.id === 'aiKey') {
       S.aiKey = t.value.trim(); S.aiModel = ''; save(); render();
       if (S.aiKey) testKey();
@@ -992,7 +1080,7 @@ comment: one short line (max 12 words) on how this compares with a 500 kcal meal
   }
   setInterval(tick, 1000);
   let minuteTimer = setInterval(() => { if (tab === 'today' && sheetMeal === null) render(); }, 60e3);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkAlerts(); render(); } });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkAlerts(); render(); if (swReg) swReg.update().catch(() => {}); } });
 
   // first weigh-in seed: keep start weight in history
   if (!S.weights.length) S.weights = [{ d: S.startDate, kg: S.startWeight }];
