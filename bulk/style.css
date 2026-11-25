@@ -378,3 +378,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .h-meal .entries { margin-top: 6px; }
 .ok-t { color: var(--accent); }
 @media (prefers-color-scheme: light) { .ok-t { color: #4a7a00; } }
+
+/* ---------- past-meal logging ---------- */
+.q-when { margin-top: 12px; }
+.q-when select { min-height: 42px; font-size: 15px; font-weight: 600; }
+.h-add { width: 100%; margin: 0 0 4px; justify-content: center; }
+.q-describe { margin-top: 10px; }
+.grid2 > .field { margin-top: 0; }
