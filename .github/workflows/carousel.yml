@@ -7,6 +7,7 @@ on:
     paths:
       - 'carousel/**'
       - 'bulk/**'
+      - 'bulk-cal/**'
       - '.github/workflows/carousel.yml'
   workflow_dispatch:
 
@@ -33,6 +34,7 @@ jobs:
           mkdir -p _pages
           cp -r carousel/. _pages/
           cp -r bulk _pages/bulk
+          cp -r bulk-cal _pages/bulk-cal
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _pages

@@ -70,7 +70,7 @@
   /* ---------- state ---------- */
   function defaults() {
     return {
-      v: 1,
+      v: 2,
       startWeight: 53, goalWeight: 60, startDate: '2026-11-25', deadline: '2026-12-12',
       wake: '08:00', bed: '00:00', meals: 7, kcalPerMeal: 500,
       times: autoTimes('08:00', '00:00', 7),
@@ -83,6 +83,8 @@
   let S;
   try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); }
   catch { S = defaults(); }
+  // v2: the old iPhone build ticked the calendar step without adding anything, so clear it once
+  if ((S.v || 1) < 2) { S.calendarDone = false; S.v = 2; }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* storage blocked */ } };
 
   let tab = 'today';
@@ -263,15 +265,16 @@
     L.push('END:VCALENDAR');
     return L.join('\r\n') + '\r\n';
   }
+  // iPhone: the home-screen app can't hand a calendar file to iOS, so open a page outside
+  // the app's scope. iOS shows it in Safari, which does the "Add All" calendar import.
+  const calUrl = () => `../bulk-cal/?t=${S.times.join(',')}&k=${S.kcalPerMeal}&u=${S.deadline}`;
+  function icsButton(cls, label) {
+    if (isIOS()) return `<a class="${cls}" href="${calUrl()}" target="_blank" rel="noopener" data-act="ics-ios">${label}</a>`;
+    return `<button class="${cls}" data-act="ics">${label}</button>`;
+  }
   function exportIcs() {
-    const ics = buildIcs();
+    download(new Blob([buildIcs()], { type: 'text/calendar' }), 'bulk-clock-meals.ics');
     S.calendarDone = true; save();
-    if (isIOS()) {
-      if (isStandalone()) { toast('Open this page in Safari to add calendar alarms'); return; }
-      location.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
-      return;
-    }
-    download(new Blob([ics], { type: 'text/calendar' }), 'bulk-clock-meals.ics');
     toast('Saved. Open the file to add it to your calendar.');
     render();
   }
@@ -349,7 +352,7 @@
         <li class="${ns === 'granted' ? 'ok' : ''}"><div><b>Allow notifications</b><p>Pings at every meal time and a nudge if you skip one, while the app is open or recently used.</p>
           ${ns === 'granted' ? '' : '<button class="btn sm primary" data-act="notif">Allow notifications</button>'}</div></li>
         <li class="${S.calendarDone ? 'ok' : ''}"><div><b>Add meal alarms to your calendar</b><p>The bulletproof one: your phone's calendar rings at every meal even with this app closed. Re-add it if you change meal times.</p>
-          <button class="btn sm" data-act="ics">Add ${S.times.length} daily alarms</button></div></li>
+          ${icsButton('btn sm', `Add ${S.times.length} daily alarms`)}</div></li>
       </ol>
     </div>`;
   }
@@ -555,8 +558,8 @@
         <div class="field" style="margin-top:12px"><span>Alarm sound when the app is open</span>
           <div class="seg"><button data-act="sound" data-v="1" class="${S.sound ? 'on' : ''}">On</button><button data-act="sound" data-v="0" class="${!S.sound ? 'on' : ''}">Off</button></div></div>
         <p class="hint">Phones only let web apps alert while open or recently used. The calendar alarms below ring every time, even with the app closed. Use both.</p>
-        <div class="row-btns"><button class="btn" data-act="ics">Add ${S.times.length} daily alarms to calendar</button></div>
-        <p class="hint">${isIOS() ? 'iPhone: do this in Safari, tap "Add All". ' : 'Android: open the downloaded file with your calendar app (Samsung Calendar opens it; for Google Calendar import it at calendar.google.com → Settings → Import). '}Changed your times? Delete the old Bulk Clock events, then add again.</p>
+        <div class="row-btns">${icsButton('btn', `Add ${S.times.length} daily alarms to calendar`)}</div>
+        <p class="hint">${isIOS() ? 'iPhone: opens a Safari page, tap Add to Calendar, then "Add All". ' : 'Android: open the downloaded file with your calendar app (Samsung Calendar opens it; for Google Calendar import it at calendar.google.com → Settings → Import). '}Changed your times? Delete the old Bulk Clock events, then add again.</p>
       </div>
 
       <div class="card">
@@ -658,6 +661,7 @@
       case 'notif': askNotif(); break;
       case 'test': fire('Test: eat now', `~${S.kcalPerMeal} kcal. Idea: ${suggest(S.kcalPerMeal)}`, 'test'); showAlarm(0, false); break;
       case 'ics': exportIcs(); break;
+      case 'ics-ios': S.calendarDone = true; save(); setTimeout(render, 300); break;
       case 'onboard-done': S.onboardDone = true; save(); render(); break;
       case 'meals': regenTimes(Number(b.dataset.v)); S.meals = S.times.length; save(); render(); break;
       case 'kpm': S.kcalPerMeal = Number(b.dataset.v); save(); render(); break;

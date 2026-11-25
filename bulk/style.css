@@ -118,7 +118,7 @@ main { max-width: 520px; margin: 0 auto; padding: 4px 16px 24px; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 48px; padding: 0 18px; border-radius: 14px;
   border: 1px solid var(--line); background: var(--surface-2);
-  font-weight: 600; width: 100%;
+  font-weight: 600; width: 100%; text-decoration: none;
 }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 700; }
 .btn.ghost { background: transparent; }
