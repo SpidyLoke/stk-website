@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0e0d">
+<title>Bulk Clock alarms</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0c0e0d; --surface:#151817; --line:#2a302d; --text:#eef2ef; --muted:#8f9a94; --accent:#c6f432; --ink:#0c0e0d; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 Inter, system-ui, sans-serif; padding: calc(24px + env(safe-area-inset-top)) 16px 32px; }
+  main { max-width: 480px; margin: 0 auto; display:flex; flex-direction:column; gap:14px; }
+  h1 { font: 800 44px/0.95 "Barlow Condensed", system-ui, sans-serif; margin: 8px 0 0; }
+  p { margin:0; color:var(--muted); }
+  p b { color:var(--text); }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:16px; }
+  ol { margin:0; padding-left:20px; color:var(--muted); }
+  ol li { margin: 4px 0; }
+  ol b { color: var(--text); }
+  .times { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .times span { background:#1e2220; border-radius:99px; padding:5px 10px; font-weight:600; font-size:13px; }
+  .btn { display:flex; align-items:center; justify-content:center; min-height:56px; border-radius:14px; font-weight:700; font-size:17px; text-decoration:none; border:0; width:100%; }
+  .primary { background:var(--accent); color:var(--ink); }
+  .ghost { background:transparent; color:var(--text); border:1px solid var(--line); font-size:15px; min-height:48px; }
+  .eyebrow { font-weight:700; font-size:12px; letter-spacing:.14em; color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <div class="eyebrow">BULK CLOCK</div>
+    <h1>Add your meal alarms</h1>
+  </div>
+  <div class="card">
+    <p id="summary"></p>
+    <div class="times" id="times"></div>
+  </div>
+  <a class="btn primary" id="add" href="#">Add to Calendar</a>
+  <div class="card">
+    <ol>
+      <li>Tap <b>Add to Calendar</b>.</li>
+      <li>On the preview, tap <b>Add All</b>, then pick a calendar.</li>
+      <li>Close this page and go back to Bulk Clock.</li>
+    </ol>
+    <p style="margin-top:10px">Nothing happens? Tap the <b>Safari compass</b> (or ••• then <b>Open in Safari</b>) and try again there.</p>
+  </div>
+  <a class="btn ghost" id="dl" href="#" download="bulk-clock-meals.ics">Download the .ics file instead</a>
+</main>
+<script src="ics.js"></script>
+<script>
+  (function () {
+    const B = window.BulkIcs;
+    const q = new URLSearchParams(location.search);
+    const today = (() => { const d = new Date(Date.now() - 4 * 3600e3); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+    const times = (q.get('t') || '').split(',').map(Number).filter(n => Number.isFinite(n) && n >= 0 && n < 2880);
+    const kcal = Number(q.get('k')) || B.DEFAULT.kcal;
+    const until = /^\d{4}-\d{2}-\d{2}$/.test(q.get('u') || '') ? q.get('u') : B.DEFAULT.untilYmd;
+    const opts = { times: times.length ? times : B.DEFAULT.times, kcal, startYmd: today, untilYmd: until };
+    const isDefault = opts.times.join() === B.DEFAULT.times.join() && kcal === B.DEFAULT.kcal && until === B.DEFAULT.untilYmd;
+
+    const clock = m => { m = ((m % 1440) + 1440) % 1440; const h = Math.floor(m / 60); return (h % 12 || 12) + ':' + String(m % 60).padStart(2, '0') + (h >= 12 ? 'pm' : 'am'); };
+    const end = new Date(until).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    document.getElementById('summary').innerHTML = `<b>${opts.times.length} alarms a day</b>, ${kcal} kcal each, every day until <b>${end}</b>.`;
+    document.getElementById('times').innerHTML = opts.times.map(clock).map(t => `<span>${t}</span>`).join('');
+
+    const ics = B.buildIcs(opts);
+    const dataUrl = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
+    // A real .ics file on the server is what iPhone handles most reliably; use it when the schedule matches.
+    document.getElementById('add').href = isDefault ? 'meals.ics' : dataUrl;
+    const dl = document.getElementById('dl');
+    dl.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
+  })();
+</script>
+</body>
+</html>

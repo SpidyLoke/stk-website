@@ -70,7 +70,7 @@
   /* ---------- state ---------- */
   function defaults() {
     return {
-      v: 1,
+      v: 2,
       startWeight: 53, goalWeight: 60, startDate: '2026-11-25', deadline: '2026-12-12',
       wake: '08:00', bed: '00:00', meals: 7, kcalPerMeal: 500,
       times: autoTimes('08:00', '00:00', 7),
@@ -78,11 +78,14 @@
       foods: FOODS.map(f => ({ id: uid(), u: 0, ...f })),
       log: {}, weights: [{ d: '2026-11-25', kg: 53 }],
       notified: {}, onboardDone: false, calendarDone: false,
+      aiKey: '', aiModel: '', aiRecent: [],
     };
   }
   let S;
   try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); }
   catch { S = defaults(); }
+  // v2: the old iPhone build ticked the calendar step without adding anything, so clear it once
+  if ((S.v || 1) < 2) { S.calendarDone = false; S.v = 2; }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* storage blocked */ } };
 
   let tab = 'today';
@@ -103,7 +106,7 @@
       const next = i < n - 1 ? mealTs(key, i + 1) : ts + 3 * 3600e3;
       const kcal = mealKcal(key, i);
       let st = 'upcoming';
-      if (kcal > 0) st = 'done';
+      if (kcal >= S.kcalPerMeal * 0.5) st = 'done';
       else if (now >= next) st = 'missed';
       else if (now >= ts) st = 'due';
       return { i, ts, next, kcal, st };
@@ -220,7 +223,7 @@
     const nmap = S.notified[key] || (S.notified[key] = {});
     let changed = false;
     statuses(key, now).forEach(m => {
-      if (m.kcal > 0) return;
+      if (m.st === 'done') return;
       const n = S.times.length;
       if (now >= m.ts && now < m.ts + ALERT_WINDOW && !nmap['m' + m.i]) {
         nmap['m' + m.i] = 1; changed = true;
@@ -263,15 +266,16 @@
     L.push('END:VCALENDAR');
     return L.join('\r\n') + '\r\n';
   }
+  // iPhone: the home-screen app can't hand a calendar file to iOS, so open a page outside
+  // the app's scope. iOS shows it in Safari, which does the "Add All" calendar import.
+  const calUrl = () => `../bulk-cal/?t=${S.times.join(',')}&k=${S.kcalPerMeal}&u=${S.deadline}`;
+  function icsButton(cls, label) {
+    if (isIOS()) return `<a class="${cls}" href="${calUrl()}" target="_blank" rel="noopener" data-act="ics-ios">${label}</a>`;
+    return `<button class="${cls}" data-act="ics">${label}</button>`;
+  }
   function exportIcs() {
-    const ics = buildIcs();
+    download(new Blob([buildIcs()], { type: 'text/calendar' }), 'bulk-clock-meals.ics');
     S.calendarDone = true; save();
-    if (isIOS()) {
-      if (isStandalone()) { toast('Open this page in Safari to add calendar alarms'); return; }
-      location.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
-      return;
-    }
-    download(new Blob([ics], { type: 'text/calendar' }), 'bulk-clock-meals.ics');
     toast('Saved. Open the file to add it to your calendar.');
     render();
   }
@@ -318,6 +322,7 @@
     if (tab === 'today') renderToday();
     if (tab === 'weight') renderWeight();
     if (tab === 'setup') renderSetup();
+    if (tab === 'history') renderHistory();
     lastSig = sig();
   }
   const sig = () => { const h = heroState(); return h.kind + h.m.i + h.list.map(m => m.st).join(''); };
@@ -349,7 +354,7 @@
         <li class="${ns === 'granted' ? 'ok' : ''}"><div><b>Allow notifications</b><p>Pings at every meal time and a nudge if you skip one, while the app is open or recently used.</p>
           ${ns === 'granted' ? '' : '<button class="btn sm primary" data-act="notif">Allow notifications</button>'}</div></li>
         <li class="${S.calendarDone ? 'ok' : ''}"><div><b>Add meal alarms to your calendar</b><p>The bulletproof one: your phone's calendar rings at every meal even with this app closed. Re-add it if you change meal times.</p>
-          <button class="btn sm" data-act="ics">Add ${S.times.length} daily alarms</button></div></li>
+          ${icsButton('btn sm', `Add ${S.times.length} daily alarms`)}</div></li>
       </ol>
     </div>`;
   }
@@ -555,8 +560,8 @@
         <div class="field" style="margin-top:12px"><span>Alarm sound when the app is open</span>
           <div class="seg"><button data-act="sound" data-v="1" class="${S.sound ? 'on' : ''}">On</button><button data-act="sound" data-v="0" class="${!S.sound ? 'on' : ''}">Off</button></div></div>
         <p class="hint">Phones only let web apps alert while open or recently used. The calendar alarms below ring every time, even with the app closed. Use both.</p>
-        <div class="row-btns"><button class="btn" data-act="ics">Add ${S.times.length} daily alarms to calendar</button></div>
-        <p class="hint">${isIOS() ? 'iPhone: do this in Safari, tap "Add All". ' : 'Android: open the downloaded file with your calendar app (Samsung Calendar opens it; for Google Calendar import it at calendar.google.com → Settings → Import). '}Changed your times? Delete the old Bulk Clock events, then add again.</p>
+        <div class="row-btns">${icsButton('btn', `Add ${S.times.length} daily alarms to calendar`)}</div>
+        <p class="hint">${isIOS() ? 'iPhone: opens a Safari page, tap Add to Calendar, then "Add All". ' : 'Android: open the downloaded file with your calendar app (Samsung Calendar opens it; for Google Calendar import it at calendar.google.com → Settings → Import). '}Changed your times? Delete the old Bulk Clock events, then add again.</p>
       </div>
 
       <div class="card">
@@ -570,6 +575,17 @@
         <p class="hint">Calories are rough estimates for typical portions. Swap in numbers from the packet when you have them.</p>
       </div>
 
+      <div class="card" id="aiCard">
+        <h3>Gemini quick log <span class="r"><span class="status-pill ${S.aiKey ? 'ok' : ''}">${S.aiKey ? 'On' : 'Off'}</span></span></h3>
+        <p class="hint" style="margin-top:0">Powers the round button: say or snap what you ate and it logs each item into the right meal. Get a free key at <b>aistudio.google.com/apikey</b>.</p>
+        <div class="field" style="margin-top:10px"><span>API key</span>
+          <input type="password" id="aiKey" value="${esc(S.aiKey)}" placeholder="Paste your Gemini API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        <div class="field"><span>Model</span>
+          <input type="text" id="aiModel" value="${esc(S.aiModel)}" placeholder="${DEFAULT_MODEL} (auto)" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        ${S.aiKey ? `<div class="row-btns"><button class="btn sm" data-act="ai-test">Test key</button><button class="btn sm danger" data-act="ai-clear">Remove key</button></div>` : ''}
+        <p class="hint">The key stays on this phone and is only sent to Google. Leave Model blank to use the latest Flash.</p>
+      </div>
+
       <div class="card">
         <h3>Data</h3>
         <p class="hint" style="margin-top:0">Everything stays on this phone. Back up before clearing your browser.</p>
@@ -581,20 +597,232 @@
       </div>`;
   }
 
+  /* ---------- Gemini quick log ---------- */
+  const GEM = 'https://generativelanguage.googleapis.com/v1beta';
+  const DEFAULT_MODEL = 'gemini-flash-latest';
+  let Q = { text: '', img: null, busy: false, result: null, error: '' };
+  let sheetMode = 'meal';
+
+  const AI_SYSTEM = `You log food for someone in Malaysia who weighs about 53 kg and is bulking on roughly 500 kcal meals.
+From the description and/or photo, list every food and drink as its own item with a realistic calorie estimate for a typical Malaysian portion (mamak, hawker, kopitiam, home cooking, convenience store, fast food). Use any quantity or size given. Count sugar and condensed milk in drinks.
+If the user says when they ate an item ("breakfast at 9", "lunch", "this morning", "just now"), set eaten_at to a 24h HH:MM time for that item, using the current time given to resolve words like "just now" or "an hour ago". If they don't say, leave eaten_at empty.
+Keep item names short (max 4 words); keep Malay food names in Malay.
+comment: one short line (max 12 words) on how this compares with a 500 kcal meal, or a quick add-on to reach it. No lectures.`;
+
+  const AI_SCHEMA = {
+    type: 'OBJECT',
+    properties: {
+      items: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
+        name: { type: 'STRING' }, kcal: { type: 'INTEGER' }, eaten_at: { type: 'STRING', nullable: true } }, required: ['name', 'kcal'] } },
+      comment: { type: 'STRING' },
+    },
+    required: ['items'],
+  };
+
+  const gemHeaders = () => ({ 'Content-Type': 'application/json', 'x-goog-api-key': S.aiKey });
+  async function pickModel() {
+    const r = await fetch(`${GEM}/models?pageSize=200`, { headers: gemHeaders() });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const names = (j.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map(m => m.name.replace(/^models\//, ''))
+      .filter(n => /flash/.test(n) && !/image|tts|live|audio|embed|exp|preview/.test(n))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    return names.find(n => !/lite/.test(n)) || names[0] || null;
+  }
+  function gemError(status, txt) {
+    if (/API_KEY_INVALID|API key not valid/i.test(txt)) return "That Gemini API key isn't valid. Check it in Setup.";
+    if (status === 403) return 'This key is not allowed to use the Gemini API.';
+    if (status === 429) return 'Gemini quota hit. Wait a minute and try again.';
+    if (status >= 500) return 'Gemini is having a moment. Try again.';
+    return `Gemini error ${status}.`;
+  }
+  async function askGemini(text, img) {
+    const now = new Date();
+    const parts = [{ text: `Current time: ${pad(now.getHours())}:${pad(now.getMinutes())}.\nWhat I ate: ${text || '(see photo)'}` }];
+    if (img) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img.split(',')[1] } });
+    const body = JSON.stringify({
+      systemInstruction: { parts: [{ text: AI_SYSTEM }] },
+      contents: [{ role: 'user', parts }],
+      generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: AI_SCHEMA },
+    });
+    const call = m => fetch(`${GEM}/models/${encodeURIComponent(m)}:generateContent`, { method: 'POST', headers: gemHeaders(), body });
+    let model = S.aiModel || DEFAULT_MODEL;
+    let r;
+    try { r = await call(model); } catch { throw new Error('No connection to Gemini.'); }
+    if (r.status === 404) {
+      const alt = await pickModel().catch(() => null);
+      if (alt && alt !== model) { model = alt; S.aiModel = alt; save(); r = await call(alt); }
+    }
+    if (!r.ok) throw new Error(gemError(r.status, await r.text()));
+    const j = await r.json();
+    const txt = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+    if (!txt) throw new Error(j.promptFeedback?.blockReason ? 'Gemini refused that one.' : 'Gemini sent back nothing. Try again.');
+    let out;
+    try { out = JSON.parse(txt.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { throw new Error("Couldn't read Gemini's answer. Try again."); }
+    const items = (out.items || []).map(it => ({ n: String(it.name || 'Food').slice(0, 40), k: Math.max(0, Math.round(Number(it.kcal) || 0)), at: it.eaten_at || null })).filter(it => it.k > 0);
+    if (!items.length) throw new Error("Gemini couldn't find any food in that.");
+    return { items, comment: out.comment || '', model };
+  }
+
+  // Which meal slot does food eaten at minute `min` (of today's day) belong to?
+  function slotFor(min, explicit) {
+    const key = todayKey();
+    const c = S.times.map((t, i) => ({ i, d: Math.abs(t - min), full: mealKcal(key, i) >= S.kcalPerMeal * 0.8 }));
+    const pool = explicit ? c : (c.some(x => !x.full) ? c.filter(x => !x.full) : c);
+    return pool.sort((a, b) => a.d - b.d)[0].i;
+  }
+  const nowMin = () => Math.round((Date.now() - parseYmd(todayKey()).getTime()) / 60e3);
+  function atToMin(at) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(at || '');
+    if (!m) return null;
+    let v = Number(m[1]) * 60 + Number(m[2]);
+    if (v < toMin(S.wake) - 60) v += 1440;
+    return v > nowMin() + 30 ? null : v;
+  }
+  function logItems(items, source) {
+    const key = todayKey();
+    const nowSlot = slotFor(nowMin(), false);
+    const added = items.map(it => {
+      const at = atToMin(it.at);
+      const m = at === null ? nowSlot : slotFor(at, true);
+      const e = { id: uid(), m, n: it.n, k: it.k, t: Date.now(), ai: 1 };
+      (S.log[key] = S.log[key] || []).push(e);
+      return e;
+    });
+    if (source) {
+      S.aiRecent = [{ t: source.slice(0, 48), items: items.map(({ n, k }) => ({ n, k })) }, ...(S.aiRecent || []).filter(r => r.t !== source.slice(0, 48))].slice(0, 6);
+    }
+    save();
+    return added;
+  }
+
+  async function shrinkPhoto(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      const s = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.8);
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  async function runQuick() {
+    const text = (Q.text || '').trim();
+    if (!text && !Q.img) { Q.error = 'Type what you ate, or add a photo.'; renderSheet(); return; }
+    Q.busy = true; Q.error = ''; renderSheet();
+    try {
+      const res = await askGemini(text, Q.img);
+      const added = logItems(res.items, text || null);
+      Q.result = { added, comment: res.comment };
+      Q.text = ''; Q.img = null;
+      if (navigator.vibrate) navigator.vibrate(40);
+    } catch (err) {
+      Q.error = err.message || 'Something went wrong.';
+    }
+    Q.busy = false;
+    renderSheet(); render();
+  }
+
+  function renderQuick() {
+    const key = todayKey();
+    const head = `<div class="grab"></div>
+      <div class="sheet-head"><h2>Quick log</h2><button class="btn sm" data-act="close">Done</button></div>`;
+    if (!S.aiKey) {
+      $('#sheet').innerHTML = head + `
+        <div class="card q-empty">
+          <p>Add your <b>Gemini API key</b> in Setup and this button logs food from a sentence or a photo, straight into the right meal.</p>
+          <div class="row-btns"><button class="btn primary" data-act="go-ai-setup">Add key in Setup</button></div>
+          <div class="row-btns"><button class="btn" data-act="log" data-meal="${defaultLogMeal()}">Pick from my food list</button></div>
+        </div>`;
+      return;
+    }
+    if (Q.result) {
+      const tot = Q.result.added.reduce((a, e) => a + e.k, 0);
+      const bySlot = {};
+      Q.result.added.forEach(e => { (bySlot[e.m] = bySlot[e.m] || []).push(e); });
+      const rows = Object.keys(bySlot).map(Number).sort((a, b) => a - b).map(m => `
+        <div class="q-slot"><div class="q-slot-h"><b>Meal ${m + 1}</b> · ${clock12(S.times[m])}<span>${fmtK(mealKcal(key, m))} / ${S.kcalPerMeal}</span></div>
+        ${bySlot[m].map(e => `<div class="q-item"><span>${esc(e.n)}</span><b>${e.k}</b></div>`).join('')}</div>`).join('');
+      $('#sheet').innerHTML = head + `
+        <div class="q-done"><div class="eyebrow">LOGGED</div><div class="q-total">+${fmtK(tot)} <small>kcal</small></div>
+        ${Q.result.comment ? `<p class="hint">${esc(Q.result.comment)}</p>` : ''}</div>
+        ${rows}
+        <p class="hint">Wrong meal or number? Tap the meal on Today to fix it.</p>
+        <div class="row-btns"><button class="btn" data-act="ai-undo">Undo</button><button class="btn primary" data-act="ai-again">Log more</button></div>`;
+      return;
+    }
+    const recent = (S.aiRecent || []).map((r, i) => `<button class="q-chip" data-act="ai-recent" data-i="${i}">${esc(r.t)} <b>${fmtK(r.items.reduce((a, x) => a + x.k, 0))}</b></button>`).join('');
+    const slot = slotFor(nowMin(), false);
+    $('#sheet').innerHTML = head + `
+      <textarea id="qText" rows="3" placeholder="What did you eat? e.g. 2 roti canai with dhal and a teh tarik" ${Q.busy ? 'disabled' : ''}>${esc(Q.text)}</textarea>
+      ${Q.img ? `<div class="q-photo"><img src="${Q.img}" alt="Your food photo"><button class="x" data-act="ai-noimg" aria-label="Remove photo">×</button></div>` : ''}
+      <div class="q-actions">
+        <label class="btn sm q-cam ${Q.busy ? 'off' : ''}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Photo<input type="file" accept="image/*" id="qImg" hidden></label>
+        <button class="btn primary" data-act="ai-go" ${Q.busy ? 'disabled' : ''}>${Q.busy ? '<span class="spin"></span>Reading it' : 'Log it'}</button>
+      </div>
+      ${Q.error ? `<p class="q-err">${esc(Q.error)}</p>` : ''}
+      <p class="hint">Goes into <b>meal ${slot + 1}</b> (${clock12(S.times[slot])}) unless you say a time, e.g. "roti canai at 9am, nasi ayam for lunch". Tap the mic on your keyboard to say it instead of typing.</p>
+      ${recent ? `<div class="sec-lbl">Again · no AI needed</div><div class="q-chips">${recent}</div>` : ''}`;
+    if (!Q.busy && !Q.img) setTimeout(() => { const t = $('#qText'); if (t && !Q.text) t.focus(); }, 250);
+  }
+
+  async function testKey() {
+    if (!S.aiKey) { toast('Paste your key first'); return; }
+    toast('Testing…');
+    try {
+      const r = await askGemini('1 banana', null);
+      toast(`Works: ${r.items[0].n} ≈ ${r.items[0].k} kcal`);
+      render();
+    } catch (err) { toast(err.message); }
+  }
+
+  function renderHistory() {
+    const tk = todayKey();
+    const target = dailyTarget();
+    const days = Array.from({ length: 21 }, (_, j) => addDays(tk, -j)).filter(k => entries(k).length || k === tk);
+    const html = days.map(k => {
+      const tot = dayKcal(k);
+      const groups = S.times.map((t, i) => ({ i, list: entries(k).filter(e => e.m === i) })).filter(g => g.list.length);
+      const extra = entries(k).filter(e => e.m === -1);
+      if (extra.length) groups.push({ i: -1, list: extra });
+      const label = k === tk ? 'Today' : k === addDays(tk, -1) ? 'Yesterday' : parseYmd(k).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      return `<div class="card">
+        <h3>${label}<span class="r"><b class="${tot >= target * 0.9 ? 'ok-t' : ''}">${fmtK(tot)}</b> / ${fmtK(target)}</span></h3>
+        <div class="bar" style="margin:0 0 10px"><i style="width:${clamp(tot / target * 100, 0, 100)}%"></i></div>
+        ${groups.length ? groups.map(g => `<div class="h-meal"><div class="h-lbl">${g.i === -1 ? 'Extra' : `Meal ${g.i + 1} <small>${clock12(S.times[g.i])}</small>`}</div>
+          <ul class="entries">${g.list.map(e => `<li>${e.ai ? '<span class="ai-mark">✦</span>' : ''}${esc(e.n)} · ${e.k}<button class="x" data-act="del-hist" data-k="${k}" data-id="${e.id}" aria-label="Remove">×</button></li>`).join('')}</ul></div>`).join('') : '<p class="hint" style="margin:0">Nothing logged yet.</p>'}
+      </div>`;
+    }).join('');
+    $('#view-history').innerHTML = html;
+  }
+
   /* ---------- sheet ---------- */
+  function openQuick() {
+    sheetMode = 'quick'; sheetMeal = -2;
+    if (!Q.busy) { Q.result = null; Q.error = ''; }
+    $('#scrim').hidden = false; $('#sheet').hidden = false;
+    document.body.style.overflow = 'hidden';
+    renderSheet();
+  }
   function openSheet(m) {
+    sheetMode = 'meal';
     sheetMeal = m;
     $('#scrim').hidden = false; $('#sheet').hidden = false;
     document.body.style.overflow = 'hidden';
     renderSheet();
   }
   function closeSheet() {
-    sheetMeal = null;
+    sheetMeal = null; sheetMode = 'meal';
     $('#scrim').hidden = true; $('#sheet').hidden = true;
     document.body.style.overflow = '';
   }
   function renderSheet() {
     if (sheetMeal === null) return;
+    if (sheetMode === 'quick') { renderQuick(); return; }
     const key = todayKey();
     const m = sheetMeal;
     const kc = m === -1 ? entries(key).filter(e => e.m === -1).reduce((a, e) => a + e.k, 0) : mealKcal(key, m);
@@ -611,7 +839,7 @@
         <button class="btn sm" data-act="close">Done</button>
       </div>
       <div class="mealpick">${picks}</div>
-      ${ents.length ? `<ul class="entries">${ents.map(e => `<li>${esc(e.n)} · ${e.k}<button class="x" data-act="del-entry" data-id="${e.id}" aria-label="Remove">×</button></li>`).join('')}</ul>` : ''}
+      ${ents.length ? `<ul class="entries">${ents.map(e => `<li>${e.ai ? '<span class="ai-mark">✦</span>' : ''}${esc(e.n)} · ${e.k}<button class="x" data-act="del-entry" data-id="${e.id}" aria-label="Remove">×</button></li>`).join('')}</ul>` : ''}
       <div class="custom">
         <input type="text" id="cName" placeholder="Something else" autocomplete="off">
         <input type="number" id="cK" placeholder="kcal" inputmode="numeric">
@@ -644,6 +872,24 @@
     switch (act) {
       case 'tab': setTab(b.dataset.tab); break;
       case 'log': openSheet(mi); break;
+      case 'quick': openQuick(); break;
+      case 'ai-go': { const t = $('#qText'); if (t) Q.text = t.value; runQuick(); break; }
+      case 'ai-noimg': Q.img = null; renderSheet(); break;
+      case 'ai-again': Q.result = null; renderSheet(); break;
+      case 'ai-undo': {
+        if (Q.result) { const ids = new Set(Q.result.added.map(e => e.id)); const k = todayKey(); S.log[k] = entries(k).filter(e => !ids.has(e.id)); save(); }
+        Q.result = null; renderSheet(); render(); toast('Undone');
+        break;
+      }
+      case 'ai-recent': {
+        const r = (S.aiRecent || [])[Number(b.dataset.i)];
+        if (r) { const added = logItems(r.items.map(x => ({ ...x, at: null })), r.t); Q.result = { added, comment: '' }; renderSheet(); render(); }
+        break;
+      }
+      case 'go-ai-setup': closeSheet(); setTab('setup'); setTimeout(() => { const el = $('#aiCard'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 50); break;
+      case 'ai-test': testKey(); break;
+      case 'ai-clear': S.aiKey = ''; S.aiModel = ''; save(); render(); toast('Key removed'); break;
+      case 'del-hist': removeEntry(b.dataset.k, b.dataset.id); break;
       case 'pick': sheetMeal = mi; renderSheet(); break;
       case 'close': closeSheet(); break;
       case 'food': { const f = S.foods.find(x => x.id === b.dataset.id); if (f) addEntry(sheetMeal, f.n, f.k, f.id); break; }
@@ -658,6 +904,7 @@
       case 'notif': askNotif(); break;
       case 'test': fire('Test: eat now', `~${S.kcalPerMeal} kcal. Idea: ${suggest(S.kcalPerMeal)}`, 'test'); showAlarm(0, false); break;
       case 'ics': exportIcs(); break;
+      case 'ics-ios': S.calendarDone = true; save(); setTimeout(render, 300); break;
       case 'onboard-done': S.onboardDone = true; save(); render(); break;
       case 'meals': regenTimes(Number(b.dataset.v)); S.meals = S.times.length; save(); render(); break;
       case 'kpm': S.kcalPerMeal = Number(b.dataset.v); save(); render(); break;
@@ -690,6 +937,7 @@
   });
 
   $('#scrim').addEventListener('click', closeSheet);
+  document.addEventListener('input', e => { if (e.target.id === 'qText') Q.text = e.target.value; });
 
   document.addEventListener('change', e => {
     const t = e.target;
@@ -715,6 +963,14 @@
     } else if (t.dataset.fk) {
       const f = S.foods.find(x => x.id === t.dataset.fk); const v = Number(t.value);
       if (f && v > 0) { f.k = Math.round(v); save(); }
+    } else if (t.id === 'qImg' && t.files[0]) {
+      const ta = $('#qText'); if (ta) Q.text = ta.value;
+      shrinkPhoto(t.files[0]).then(d => { Q.img = d; renderSheet(); }).catch(() => toast("Couldn't read that photo"));
+    } else if (t.id === 'aiKey') {
+      S.aiKey = t.value.trim(); S.aiModel = ''; save(); render();
+      if (S.aiKey) testKey();
+    } else if (t.id === 'aiModel') {
+      S.aiModel = t.value.trim(); save();
     } else if (t.id === 'restore' && t.files[0]) {
       t.files[0].text().then(txt => {
         const data = JSON.parse(txt);

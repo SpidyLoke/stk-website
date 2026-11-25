@@ -27,6 +27,7 @@
 <main id="main">
   <section class="view" id="view-today" data-view="today"></section>
   <section class="view" id="view-weight" data-view="weight" hidden></section>
+  <section class="view" id="view-history" data-view="history" hidden></section>
   <section class="view" id="view-setup" data-view="setup" hidden></section>
 </main>
 
@@ -38,6 +39,15 @@
   <button class="tab" data-tab="weight">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-5 4 3 8-8"/><path d="M15 7h5v5"/></svg>
     <span>Weight</span>
+  </button>
+  <div class="fab-slot">
+    <button class="fab" data-act="quick" aria-label="Quick log what you ate">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+    </button>
+  </div>
+  <button class="tab" data-tab="history">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+    <span>History</span>
   </button>
   <button class="tab" data-tab="setup">
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>
