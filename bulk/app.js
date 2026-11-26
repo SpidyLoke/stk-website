@@ -642,8 +642,8 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
         .map(m => m.name.replace(/^models\//, ''))
         .filter(n => /flash/.test(n) && !/image|tts|live|audio|embed|exp/.test(n))
         .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-      // full Flash first (stable before preview), then Lite
-      const rank = n => (/lite/.test(n) ? 2 : 0) + (/preview/.test(n) ? 1 : 0);
+      // stable before preview; within each, full Flash before Lite
+      const rank = n => (/preview/.test(n) ? 2 : 0) + (/lite/.test(n) ? 1 : 0);
       modelList = names.sort((a, b) => rank(a) - rank(b));
     } catch { modelList = []; }
     return modelList;
@@ -670,11 +670,22 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
     });
     const call = (m, schema) => fetch(`${GEM}/models/${encodeURIComponent(m)}:generateContent`, { method: 'POST', headers: gemHeaders(), body: payload(schema) });
 
-    // Try: chosen model → same again after a pause → same without the JSON schema → other Flash models.
-    const tried = new Set();
-    let model = S.aiModel || DEFAULT_MODEL, schema = true, lastErr = '', retried = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      tried.add(model);
+    // Busy (503/429) or missing (404): move straight on to the next model; free-tier overloads are
+    // per model, so another Flash or Flash-Lite usually answers. Internal errors (500) get one retry
+    // without the JSON schema first.
+    const tried = [];
+    let queue = null;
+    const nextModel = async () => {
+      if (!queue) {
+        const listed = await flashModels();
+        queue = [...listed, 'gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+      }
+      while (queue.length) { const m = queue.shift(); if (!tried.includes(m)) return m; }
+      return null;
+    };
+    let model = S.aiModel || DEFAULT_MODEL, schema = true, lastErr = '', busy = 0, retried500 = false;
+    for (let attempt = 0; attempt < 10 && model; attempt++) {
+      if (!tried.includes(model)) tried.push(model);
       let r;
       try { r = await call(model, schema); } catch { throw new Error('No connection to Gemini. Check your signal.'); }
       if (r.ok) {
@@ -695,16 +706,12 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
       lastErr = gemError(r.status, body);
       if (/API_KEY_INVALID|API key not valid/i.test(body) || r.status === 403) break;
       if (r.status === 400 && schema && /schema|response_?schema|Invalid JSON payload|Unknown name/i.test(body)) { schema = false; continue; }
-      if (r.status >= 500 || r.status === 429) {
-        if (!retried) { retried = true; await sleep(1500); continue; }
-        if (schema && r.status >= 500) { schema = false; continue; }
-      }
-      if (r.status === 404 || r.status >= 500 || r.status === 429) {
-        const alt = (await flashModels()).find(n => !tried.has(n));
-        if (alt) { model = alt; schema = true; continue; }
-      }
+      if (r.status === 500 && !retried500) { retried500 = true; schema = false; continue; }
+      if (r.status === 503 || r.status === 429) busy++;
+      if (r.status === 404 || r.status >= 500 || r.status === 429) { model = await nextModel(); continue; }
       break;
     }
+    if (busy >= 2) lastErr = `Google's Gemini servers are overloaded right now (tried ${tried.length} models). Spikes usually pass in a few minutes, or pick from your food list below.`;
     throw new Error(lastErr || 'Gemini failed. Try again.');
   }
 
@@ -839,7 +846,7 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
         <label class="btn sm q-cam ${Q.busy ? 'off' : ''}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Photo<input type="file" accept="image/*" id="qImg" hidden></label>
         <button class="btn primary" data-act="ai-go" ${Q.busy ? 'disabled' : ''}>${Q.busy ? '<span class="spin"></span>Reading it' : 'Log it'}</button>
       </div>
-      ${Q.error ? `<p class="q-err">${esc(Q.error)}</p>` : ''}
+      ${Q.error ? `<p class="q-err">${esc(Q.error)}</p>${(Q.day || tk) === tk ? `<div class="row-btns"><button class="btn sm" data-act="log" data-meal="${Q.meal !== null ? Q.meal : defaultLogMeal()}">Pick from my food list instead</button></div>` : ''}` : ''}
       <p class="hint">${autoHint()} Tap the mic on your keyboard to say it.</p>
       ${recent ? `<div class="sec-lbl">Again · no AI needed</div><div class="q-chips">${recent}</div>` : ''}`;
   }
