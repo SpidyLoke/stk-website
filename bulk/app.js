@@ -79,6 +79,8 @@
       log: {}, weights: [{ d: '2026-11-25', kg: 53 }],
       notified: {}, onboardDone: false, calendarDone: false,
       aiKey: '', aiModel: '', aiRecent: [],
+      pushUrl: '', pushOn: false, pushId: '', vapid: null, pushErr: '', calendarOff: false,
+      age: 18, height: 170, sex: 'm', activity: 'light',
     };
   }
   let S;
@@ -86,7 +88,7 @@
   catch { S = defaults(); }
   // v2: the old iPhone build ticked the calendar step without adding anything, so clear it once
   if ((S.v || 1) < 2) { S.calendarDone = false; S.v = 2; }
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* storage blocked */ } };
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* storage blocked */ } queuePushSync(); };
 
   let tab = 'today';
   let sheetMeal = null;
@@ -233,20 +235,207 @@
       const n = S.times.length;
       if (now >= m.ts && now < m.ts + ALERT_WINDOW && !nmap['m' + m.i]) {
         nmap['m' + m.i] = 1; changed = true;
-        fire(`Eat now: meal ${m.i + 1} of ${n}`, `~${S.kcalPerMeal} kcal. Idea: ${suggest(S.kcalPerMeal, m.i)}`, 'meal');
+        if (!S.pushOn) fire(`Eat now: meal ${m.i + 1} of ${n}`, `~${S.kcalPerMeal} kcal. Idea: ${suggest(S.kcalPerMeal, m.i)}`, 'meal');
         if (document.visibilityState === 'visible') showAlarm(m.i, false);
       }
       const nudgeAt = m.ts + S.nudgeMin * 60e3;
       if (S.nudgeMin > 0 && now >= nudgeAt && now < nudgeAt + ALERT_WINDOW && now < m.next && !nmap['n' + m.i]) {
         nmap['n' + m.i] = 1; changed = true;
         const behind = Math.max(0, (m.i + 1) * S.kcalPerMeal - dayKcal(key));
-        fire(`Meal ${m.i + 1} still not logged`, `You're ${fmtK(behind)} kcal behind today. Eat something now, even a shake.`, 'meal');
+        if (!S.pushOn) fire(`Meal ${m.i + 1} still not logged`, `You're ${fmtK(behind)} kcal behind today. Eat something now, even a shake.`, 'meal');
         if (document.visibilityState === 'visible') showAlarm(m.i, true);
       }
     });
     // keep the notified map small
     Object.keys(S.notified).forEach(k => { if (k < addDays(key, -3)) { delete S.notified[k]; changed = true; } });
     if (changed) save();
+  }
+
+  /* ---------- real push, sent by the user's Cloudflare Worker (push-worker.js) ---------- */
+  var pushTimer = null, pushLastSent = '', pushHealth = null, workerCode = '';
+  const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const b64uDec = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+  function pushBase() { return (S.pushUrl || '').trim().replace(/\/+$/, ''); }
+  fetch('push-worker.js').then(r => r.ok ? r.text() : '').then(t => { workerCode = t; }).catch(() => {});
+
+  function doneMap() {
+    const tk = todayKey(), out = {};
+    [addDays(tk, -1), tk].forEach(k => { out[k] = statuses(k).filter(m => m.st === 'done').map(m => m.i); });
+    return out;
+  }
+  function pushPayload() {
+    const ideas = [...S.foods]
+      .sort((a, b) => (b.u || 0) - (a.u || 0) || Math.abs(a.k - S.kcalPerMeal) - Math.abs(b.k - S.kcalPerMeal))
+      .slice(0, 6).map(f => `${f.n} (${f.k})`);
+    return { times: S.times, tz: -new Date().getTimezoneOffset(), kcal: S.kcalPerMeal, nudge: S.nudgeMin, deadline: S.deadline, ideas, done: doneMap() };
+  }
+  async function pushPost(path, extra) {
+    let r;
+    try { r = await fetch(pushBase() + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: S.pushId, ...extra }) }); }
+    catch { throw new Error("Can't reach your Worker. Check the URL and your signal."); }
+    let j = {}; try { j = await r.json(); } catch { /* not JSON */ }
+    if (!r.ok || j.ok === false) { const e = new Error(j.error || (j.detail ? `Push service said ${j.status}: ${j.detail}` : `Worker error ${r.status}`)); e.status = r.status; throw e; }
+    return j;
+  }
+  async function checkPushHealth() {
+    if (!pushBase()) { pushHealth = null; return null; }
+    try {
+      const r = await fetch(pushBase(), { cache: 'no-store' });
+      const j = await r.json();
+      pushHealth = j.app === 'bulk-clock-push' ? { ok: j.ok, lastCron: j.lastCron, error: j.error } : { ok: false, error: "That URL isn't a Bulk Clock Worker." };
+    } catch { pushHealth = { ok: false, error: "Can't reach that URL. Check it, and that you tapped Deploy." }; }
+    return pushHealth;
+  }
+  function queuePushSync() {
+    if (!S.pushOn || !S.pushId || !pushBase()) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => syncPush(false), 1500);
+  }
+  async function syncPush(force) {
+    const body = pushPayload(), sig = JSON.stringify(body);
+    if (!force && sig === pushLastSent) return;
+    try { await pushPost('/sync', body); pushLastSent = sig; S.pushErr = ''; }
+    catch (e) {
+      if (e.status === 404) { try { await pushSubscribe(); } catch (e2) { S.pushErr = e2.message; } }
+      else S.pushErr = e.message;
+    }
+  }
+  async function pushSubscribe() {
+    if (!pushBase()) throw new Error('Paste your Worker URL first.');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      throw new Error(isIOS() && !isStandalone() ? 'Open Bulk Clock from the home-screen icon first, then connect.' : "This browser can't receive push.");
+    }
+    if (Notification.permission !== 'granted') {
+      const p = await Notification.requestPermission();
+      if (p !== 'granted') throw new Error('Notifications are blocked. Turn them on in iPhone Settings → Notifications → Bulk Clock.');
+    }
+    const reg = swReg || await navigator.serviceWorker.ready;
+    if (!S.vapid) {
+      const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+      S.vapid = { publicKey: b64u(await crypto.subtle.exportKey('raw', kp.publicKey)), privateJwk: await crypto.subtle.exportKey('jwk', kp.privateKey) };
+    }
+    if (!S.pushId) S.pushId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+    let sub = await reg.pushManager.getSubscription();
+    const subKey = sub && sub.options && sub.options.applicationServerKey;
+    if (sub && subKey && b64u(subKey) !== S.vapid.publicKey) { await sub.unsubscribe(); sub = null; }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uDec(S.vapid.publicKey) });
+    const body = pushPayload();
+    await pushPost('/subscribe', { sub: sub.toJSON(), vapid: S.vapid, ...body });
+    pushLastSent = JSON.stringify(body);
+    S.pushOn = true; S.pushErr = '';
+    save();
+  }
+  async function pushConnect() {
+    const el = $('#pushUrl'); if (el) S.pushUrl = el.value.trim();
+    if (!/^https:\/\/[^ ]+$/.test(pushBase())) { toast('Paste the full Worker URL, starting https://'); return; }
+    save();
+    toast('Connecting…');
+    const h = await checkPushHealth();
+    if (!h || !h.ok) { render(); toast(h ? h.error : 'No URL'); return; }
+    try {
+      await pushSubscribe();
+      await pushPost('/test', {});
+      toast('Connected. A test notification is on its way.');
+    } catch (e) { S.pushErr = e.message; toast(e.message); }
+    render();
+  }
+  async function pushOff() {
+    try { await pushPost('/unsubscribe', {}); } catch { /* server may already be gone */ }
+    try { const reg = swReg || await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch { /* ignore */ }
+    S.pushOn = false; S.pushErr = ''; save(); render(); toast('Push turned off');
+  }
+  // On open: make sure iOS hasn't dropped the subscription, and refresh the server's copy.
+  async function pushOnOpen() {
+    if (!S.pushOn) return;
+    try {
+      const reg = swReg || await navigator.serviceWorker.ready;
+      if (!(await reg.pushManager.getSubscription())) { await pushSubscribe(); }
+      else await syncPush(true);
+    } catch (e) { S.pushErr = e.message; }
+    if (tab === 'setup') render();
+  }
+
+  /* ---------- forecast ---------- */
+  const ACT = { light: 1.375, moderate: 1.55, hard: 1.725 };
+  const KCAL_PER_KG = 7700;
+  const round50 = n => Math.round(n / 50) * 50;
+  function trendWeight() { // latest weigh-in, so the forecast moves the moment you log a new weight
+    const ws = sortedWeights();
+    return ws.length ? ws[ws.length - 1].kg : S.startWeight;
+  }
+  const bmr = kg => 10 * kg + 6.25 * S.height - 5 * S.age + (S.sex === 'f' ? -161 : 5);
+  // Formula maintenance, blended with what your own logs + weigh-ins imply once there are 10+ days of data.
+  function maintenance() {
+    const formula = Math.round(bmr(trendWeight()) * (ACT[S.activity] || ACT.light));
+    const ws = sortedWeights().filter(w => w.d >= S.startDate);
+    if (ws.length >= 2) {
+      const a = ws[0], b = ws[ws.length - 1], span = daysBetween(a.d, b.d);
+      if (span >= 10) {
+        const ks = Array.from({ length: span }, (_, j) => addDays(a.d, j)).filter(k => entries(k).length);
+        if (ks.length >= span * 0.7) {
+          const avg = ks.reduce((s, k) => s + dayKcal(k), 0) / ks.length;
+          const water = a.d === S.startDate ? 1.5 : 0;
+          const est = avg - (b.kg - a.kg - water) * KCAL_PER_KG / span;
+          return { kcal: Math.round(clamp((est + formula) / 2, formula * 0.8, formula * 1.25)), src: 'data', formula };
+        }
+      }
+    }
+    return { kcal: formula, src: 'formula', formula };
+  }
+  function avgIntake() {
+    const tk = todayKey();
+    const ks = Array.from({ length: 7 }, (_, j) => addDays(tk, -(j + 1))).filter(k => k >= S.startDate && entries(k).length);
+    if (!ks.length) return null;
+    return { kcal: Math.round(ks.reduce((s, k) => s + dayKcal(k), 0) / ks.length), days: ks.length };
+  }
+  function forecast() {
+    const tk = todayKey();
+    const daysLeft = Math.max(0, daysBetween(tk, S.deadline)); // eating days before the deadline morning
+    const trend = trendWeight();
+    const m = maintenance();
+    const sinceStart = daysBetween(S.startDate, tk);
+    // first ~10 days of eating big: ~1.5 kg of water + stored carbs on top of tissue
+    const waterLeft = sinceStart < 10 ? clamp(1.5 - (trend - S.startWeight), 0, 1.5) : 0;
+    const proj = kcal => trend + (kcal >= m.kcal + 500 ? waterLeft : 0) + (kcal - m.kcal) * daysLeft / KCAL_PER_KG;
+    const intake = avgIntake();
+    const paceKcal = intake ? intake.kcal : dailyTarget();
+    const gap = S.goalWeight - trend - waterLeft;
+    const needGoal = daysLeft > 0 && gap > 0 ? m.kcal + gap * KCAL_PER_KG / daysLeft : null;
+    const eatenToday = dayKcal(tk);
+    return {
+      daysLeft, trend, m, intake, paceKcal, needGoal, proj,
+      atPace: proj(paceKcal),
+      todayLeft: Math.max(0, dailyTarget() - eatenToday),
+      totalLeft: Math.max(0, dailyTarget() * daysLeft - eatenToday),
+    };
+  }
+  function forecastCard() {
+    const f = forecast();
+    if (f.daysLeft === 0) return `<div class="card"><h3>Forecast</h3><p class="hint" style="margin:0">Deadline reached. Set a new one in Setup to keep forecasting.</p></div>`;
+    const plan = dailyTarget();
+    const opts = [...new Set([3000, 3500, 4000, 4500, plan, round50(f.paceKcal)])].sort((a, b) => a - b);
+    const rows = opts.map(k => {
+      const kg = f.proj(k);
+      const tags = [k === plan ? 'your plan' : '', k === round50(f.paceKcal) && f.intake ? 'your pace' : ''].filter(Boolean).join(' · ');
+      return `<div class="fc-row ${k === plan ? 'on' : ''} ${kg >= S.goalWeight ? 'hit' : ''}"><span>${fmtK(k)} kcal/day${tags ? ` <small>${tags}</small>` : ''}</span><b>${kg.toFixed(1)} kg</b></div>`;
+    }).join('');
+    const need = f.needGoal
+      ? `<b>${S.goalWeight} kg needs about ${fmtK(round50(f.needGoal))} kcal a day</b> from today${f.needGoal > plan ? `, ${fmtK(round50(f.needGoal - plan))} more than your plan` : ''}.`
+      : `You're on track for ${S.goalWeight} kg. Keep eating to plan.`;
+    return `
+      <div class="card fc">
+        <h3>Forecast for ${shortDate(S.deadline)} <span class="r">${f.daysLeft} eating days left</span></h3>
+        <div class="fc-big">${f.atPace.toFixed(1)}<small> kg</small></div>
+        <p class="hint" style="margin-top:2px">${f.intake ? `At what you've actually eaten: <b>${fmtK(f.intake.kcal)} kcal/day</b> (average of the last ${f.intake.days} logged day${f.intake.days > 1 ? 's' : ''}).` : `If you hit your plan of <b>${fmtK(plan)} kcal/day</b>. Log food to forecast from what you really eat.`}</p>
+        <p class="fc-need">${need}</p>
+        <div class="fc-rows">${rows}</div>
+        <div class="stats" style="margin-top:12px">
+          <div class="stat"><div class="k">Left today</div><div class="v">${fmtK(f.todayLeft)}</div></div>
+          <div class="stat"><div class="k">Left to ${shortDate(S.deadline)}</div><div class="v">${f.totalLeft >= 10000 ? (f.totalLeft / 1000).toFixed(1) + '<small>k</small>' : fmtK(f.totalLeft)}</div></div>
+          <div class="stat"><div class="k">Maintenance</div><div class="v">${fmtK(f.m.kcal)}</div></div>
+        </div>
+        <p class="hint">Based on your latest weigh-in (${f.trend.toFixed(1)} kg). Maintenance is ${f.m.src === 'data' ? 'worked out from your own logs and weigh-ins' : `estimated from your age, height, weight and activity (set in Setup); it switches to your real data after 10 days of logging`}. Assumes 7,700 kcal per kg${f.daysLeft && daysBetween(S.startDate, todayKey()) < 10 ? ', plus ~1.5 kg of water and stored carbs in the first week of eating big' : ''}.</p>
+      </div>`;
   }
 
   /* ---------- calendar export (fires with the app closed) ---------- */
@@ -359,8 +548,11 @@
         ${step1}
         <li class="${ns === 'granted' ? 'ok' : ''}"><div><b>Allow notifications</b><p>Pings at every meal time and a nudge if you skip one, while the app is open or recently used.</p>
           ${ns === 'granted' ? '' : '<button class="btn sm primary" data-act="notif">Allow notifications</button>'}</div></li>
-        <li class="${S.calendarDone ? 'ok' : ''}"><div><b>Add meal alarms to your calendar</b><p>The bulletproof one: your phone's calendar rings at every meal even with this app closed. Re-add it if you change meal times.</p>
-          ${icsButton('btn sm', `Add ${S.times.length} daily alarms`)}</div></li>
+        ${S.calendarOff
+          ? `<li class="${S.pushOn ? 'ok' : ''}"><div><b>Turn on push notifications</b><p>Alerts at every meal with the app closed, sent by your own free Cloudflare Worker.</p>
+            ${S.pushOn ? '' : '<button class="btn sm primary" data-act="go-push">Set up push</button>'}</div></li>`
+          : `<li class="${S.calendarDone ? 'ok' : ''}"><div><b>Add meal alarms to your calendar</b><p>Your phone's calendar rings at every meal even with this app closed. Re-add it if you change meal times.</p>
+            ${icsButton('btn sm', `Add ${S.times.length} daily alarms`)}</div></li>`}
       </ol>
     </div>`;
   }
@@ -450,7 +642,8 @@
           <div class="stat"><div class="k">To go</div><div class="v">${Math.max(0, p.toGo).toFixed(1)}<small>kg</small></div></div>
           <div class="stat ${p.diff < -0.3 ? 'bad' : 'good'}"><div class="k">vs plan</div><div class="v">${p.diff >= 0 ? '+' : ''}${p.diff.toFixed(1)}<small>kg</small></div></div>
         </div>
-        <div class="row-btns"><button class="btn sm" data-act="tab" data-tab="weight">Log today's weight</button></div>
+        ${(() => { const f = forecast(); return f.daysLeft ? `<p class="hint">Forecast: <b>${f.atPace.toFixed(1)} kg</b> on ${shortDate(S.deadline)} at your pace.${f.needGoal ? ` ${S.goalWeight} kg needs ~${fmtK(round50(f.needGoal))} kcal/day.` : ''} <b>${fmtK(f.todayLeft)}</b> kcal left today.</p>` : ''; })()}
+        <div class="row-btns"><button class="btn sm" data-act="tab" data-tab="weight">Weigh in &amp; full forecast</button></div>
       </div>`;
   }
 
@@ -499,6 +692,7 @@
           <button class="btn primary" data-act="save-weight">Save</button>
         </div>
       </div>
+      ${forecastCard()}
       <div class="card">
         <div class="stats">
           <div class="stat"><div class="k">Now</div><div class="v">${p.latest.toFixed(1)}</div></div>
@@ -518,7 +712,19 @@
       <div class="card"><h3>History</h3><ul class="list">${list || '<li class="hint">No weigh-ins yet.</li>'}</ul></div>`;
   }
 
+  function pushStatus() {
+    const lines = [];
+    if (S.pushErr) lines.push(`<p class="q-err">${esc(S.pushErr)}</p>`);
+    if (pushHealth && !pushHealth.ok) lines.push(`<p class="q-err">${esc(pushHealth.error || 'Worker problem')}</p>`);
+    if (pushHealth && pushHealth.ok) {
+      const ago = pushHealth.lastCron ? Math.round((Date.now() - pushHealth.lastCron) / 60e3) : null;
+      lines.push(`<p class="hint">Worker OK · ${ago === null ? 'cron not seen yet (it checks in every 10 min; add the Cron trigger if you haven\'t)' : ago <= 15 ? `cron running (checked in ${ago} min ago)` : `<b>cron hasn't checked in for ${ago} min</b>, check the Cron trigger`}</p>`);
+    }
+    return lines.join('');
+  }
+
   function renderSetup() {
+    if (pushBase() && !pushHealth) checkPushHealth().then(() => { if (tab === 'setup') render(); });
     const ns = notifState();
     const nsTxt = { granted: ['ok', 'On'], denied: ['no', 'Blocked in settings'], default: ['', 'Not asked yet'], unsupported: ['no', isIOS() && !isStandalone() ? 'Add to Home Screen first' : 'Not supported here'] }[ns];
     const times = S.times.map((m, i) => `<label><span>${i + 1}</span><input type="time" data-time="${i}" value="${hhmm(m)}"></label>`).join('');
@@ -565,9 +771,51 @@
           <div class="seg">${[0, 15, 20, 30].map(v => `<button data-act="nudge" data-v="${v}" class="${S.nudgeMin === v ? 'on' : ''}">${v ? v + ' min' : 'Off'}</button>`).join('')}</div></div>
         <div class="field" style="margin-top:12px"><span>Alarm sound when the app is open</span>
           <div class="seg"><button data-act="sound" data-v="1" class="${S.sound ? 'on' : ''}">On</button><button data-act="sound" data-v="0" class="${!S.sound ? 'on' : ''}">Off</button></div></div>
-        <p class="hint">Phones only let web apps alert while open or recently used. The calendar alarms below ring every time, even with the app closed. Use both.</p>
+        <div class="field" style="margin-top:12px"><span>Calendar alarms</span>
+          <div class="seg"><button data-act="cal" data-v="1" class="${!S.calendarOff ? 'on' : ''}">Use calendar</button><button data-act="cal" data-v="0" class="${S.calendarOff ? 'on' : ''}">Notifications only</button></div></div>
+        ${S.calendarOff
+          ? `<p class="hint">${S.pushOn ? 'Push is on, so meal alerts arrive with the app closed.' : "Without push (below), alerts only fire while Bulk Clock is open on screen."} Already added the calendar alarms? In the Calendar app, tap a Bulk Clock event → Delete Event → <b>Delete All Future Events</b>, once per meal.</p>`
+          : `<p class="hint">${S.pushOn ? 'Push is on, so you can switch to Notifications only and drop the calendar.' : 'Web apps can only alert while open on screen. Calendar alarms ring every time, or set up push below.'}</p>
         <div class="row-btns">${icsButton('btn', `Add ${S.times.length} daily alarms to calendar`)}</div>
-        <p class="hint">${isIOS() ? 'iPhone: opens a Safari page, tap Add to Calendar, then "Add All". ' : 'Android: open the downloaded file with your calendar app (Samsung Calendar opens it; for Google Calendar import it at calendar.google.com → Settings → Import). '}Changed your times? Delete the old Bulk Clock events, then add again.</p>
+        <p class="hint">${isIOS() ? 'iPhone: opens a Safari page, tap Add to Calendar, then "Add All". ' : 'Android: open the downloaded file with your calendar app. '}Changed your times? Delete the old Bulk Clock events, then add again.</p>`}
+      </div>
+
+      <div class="card" id="pushCard">
+        <h3>Push notifications <span class="r"><span class="status-pill ${S.pushOn ? 'ok' : ''}">${S.pushOn ? 'On' : 'Off'}</span></span></h3>
+        <p class="hint" style="margin-top:0">Real alerts at every meal and nudge, even with the app closed, sent by your own free Cloudflare Worker. One-time setup, about 10 minutes.</p>
+        <div class="field" style="margin-top:10px"><span>Worker URL</span>
+          <input type="url" id="pushUrl" value="${esc(S.pushUrl)}" placeholder="https://bulk-clock-push.yourname.workers.dev" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        ${pushStatus()}
+        <div class="row-btns">${S.pushOn
+          ? '<button class="btn sm" data-act="push-test">Send test</button><button class="btn sm" data-act="push-connect">Reconnect</button><button class="btn sm danger" data-act="push-off">Turn off</button>'
+          : '<button class="btn primary" data-act="push-connect">Connect</button>'}</div>
+        <details class="howto" ${S.pushUrl ? '' : 'open'}>
+          <summary>How to set up the Worker</summary>
+          <ol>
+            <li>Tap <b>Copy Worker code</b>, then <b>Open Cloudflare</b> and sign up (free, no card).</li>
+            <li><b>Workers &amp; Pages</b> → <b>Create</b> → <b>Start with Hello World</b>. Name it <b>bulk-clock-push</b> → <b>Deploy</b>.</li>
+            <li>Tap <b>Edit code</b>. Select all, delete, paste. Tap <b>Deploy</b>.</li>
+            <li><b>Storage &amp; Databases</b> → <b>Workers KV</b> → <b>Create</b>. Name it <b>bulk-clock</b>.</li>
+            <li>Back in your Worker: <b>Settings</b> → <b>Bindings</b> → <b>Add</b> → <b>KV namespace</b>. Variable name <b>BULK</b>, pick <b>bulk-clock</b>, save.</li>
+            <li><b>Settings</b> → <b>Trigger events</b> → <b>Add</b> → <b>Cron triggers</b> → every minute (<b>* * * * *</b>).</li>
+            <li>Copy the Worker's URL (ends in <b>workers.dev</b>), paste it above, tap <b>Connect</b>.</li>
+          </ol>
+          <p class="hint">Cloudflare renames menus now and then; look for the closest match. Do the setup in Safari, then connect from the home-screen app.</p>
+          <div class="row-btns"><button class="btn sm" data-act="push-copy">Copy Worker code</button><a class="btn sm" href="https://dash.cloudflare.com/" target="_blank" rel="noopener">Open Cloudflare</a></div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h3>You <span class="r">for the forecast</span></h3>
+        <div class="grid2">
+          <label class="field"><span>Age</span><input type="number" inputmode="numeric" data-p="age" value="${S.age}"></label>
+          <label class="field"><span>Height (cm)</span><input type="number" inputmode="numeric" data-p="height" value="${S.height}"></label>
+        </div>
+        <div class="field" style="margin-top:10px"><span>Sex</span>
+          <div class="seg"><button data-act="sex" data-v="m" class="${S.sex === 'm' ? 'on' : ''}">Male</button><button data-act="sex" data-v="f" class="${S.sex === 'f' ? 'on' : ''}">Female</button></div></div>
+        <div class="field" style="margin-top:10px"><span>Training</span>
+          <div class="seg">${[['light', '1-2 days'], ['moderate', '3-5 days'], ['hard', '6-7 days']].map(([v, l]) => `<button data-act="activity" data-v="${v}" class="${S.activity === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <p class="hint">Maintenance estimate: <b>${fmtK(maintenance().formula)} kcal/day</b>. The forecast replaces it with your real numbers after 10 days of logging.</p>
       </div>
 
       <div class="card">
@@ -960,6 +1208,18 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
       case 'tab': setTab(b.dataset.tab); break;
       case 'log': openSheet(mi); break;
       case 'quick': openQuick(); break;
+      case 'push-connect': pushConnect(); break;
+      case 'push-test': pushPost('/test', {}).then(() => toast('Sent. It should land in a few seconds.')).catch(e => toast(e.message)); break;
+      case 'push-off': pushOff(); break;
+      case 'push-copy': {
+        if (!workerCode) { toast('Still loading the code, try again'); break; }
+        (navigator.clipboard ? navigator.clipboard.writeText(workerCode) : Promise.reject()).then(() => toast('Worker code copied')).catch(() => toast("Couldn't copy. Long-press to copy from push-worker.js"));
+        break;
+      }
+      case 'go-push': setTab('setup'); setTimeout(() => { const el = $('#pushCard'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 50); break;
+      case 'cal': S.calendarOff = b.dataset.v === '0'; save(); render(); break;
+      case 'sex': S.sex = b.dataset.v; save(); render(); break;
+      case 'activity': S.activity = b.dataset.v; save(); render(); break;
       case 'quick-day': openQuick({ day: b.dataset.k }); break;
       case 'quick-meal': openQuick({ meal: Number(b.dataset.meal) }); break;
       case 'ai-go': { const t = $('#qText'); if (t) Q.text = t.value; runQuick(); break; }
@@ -1055,6 +1315,13 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
     } else if (t.id === 'qImg' && t.files[0]) {
       const ta = $('#qText'); if (ta) Q.text = ta.value;
       shrinkPhoto(t.files[0]).then(d => { Q.img = d; renderSheet(); }).catch(() => toast("Couldn't read that photo"));
+    } else if (t.dataset.p) {
+      const v = Number(t.value);
+      if (t.dataset.p === 'age' && v >= 10 && v <= 90) S.age = v;
+      if (t.dataset.p === 'height' && v >= 120 && v <= 230) S.height = v;
+      save(); render();
+    } else if (t.id === 'pushUrl') {
+      S.pushUrl = t.value.trim(); pushHealth = null; save(); render();
     } else if (t.id === 'qDay') {
       const ta = $('#qText'); if (ta) Q.text = ta.value;
       Q.day = t.value === todayKey() ? null : t.value; renderSheet();
@@ -1087,11 +1354,12 @@ Reply only with JSON: {"items":[{"name":"...","kcal":123,"eaten_at":"HH:MM or nu
   }
   setInterval(tick, 1000);
   let minuteTimer = setInterval(() => { if (tab === 'today' && sheetMeal === null) render(); }, 60e3);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkAlerts(); render(); if (swReg) swReg.update().catch(() => {}); } });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkAlerts(); render(); if (swReg) swReg.update().catch(() => {}); pushOnOpen(); } });
 
   // first weigh-in seed: keep start weight in history
   if (!S.weights.length) S.weights = [{ d: S.startDate, kg: S.startWeight }];
   S.meals = S.times.length;
   render();
+  pushOnOpen();
   void minuteTimer;
 })();

@@ -385,3 +385,22 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .h-add { width: 100%; margin: 0 0 4px; justify-content: center; }
 .q-describe { margin-top: 10px; }
 .grid2 > .field { margin-top: 0; }
+
+/* ---------- forecast ---------- */
+.fc-big { font: 800 56px/1 var(--display); font-variant-numeric: tabular-nums; }
+.fc-big small { font-size: 22px; color: var(--muted); }
+.fc-need { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+.fc-need b { color: var(--text); }
+.fc-rows { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.fc-row { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); font-size: 14px; }
+.fc-row small { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-left: 4px; }
+.fc-row b { font: 700 18px var(--display); font-variant-numeric: tabular-nums; }
+.fc-row.on { outline: 1.5px solid var(--accent); }
+.fc-row.hit b { color: var(--accent); }
+@media (prefers-color-scheme: light) { .fc-row.hit b { color: #4a7a00; } }
+
+/* ---------- push setup ---------- */
+.howto { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.howto summary { font-weight: 700; font-size: 14px; cursor: pointer; }
+.howto ol { margin: 10px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+.howto ol b { color: var(--text); font-weight: 600; }
